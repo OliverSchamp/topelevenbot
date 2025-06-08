@@ -65,11 +65,23 @@ def get_player_name(name_text: str) -> Optional[str]:
     try:
         logger.info(f"Found name: {name_text}")
         last_dot_index = name_text.rfind('.')
-        if last_dot_index != 0:
-            name_text = name_text[last_dot_index-1:]
-        output = name_text.strip()
+        last_comma_index = name_text.rfind(',')
+        
+        # Find the rightmost dot/comma
+        if last_dot_index > last_comma_index:
+            split_index = last_dot_index
+        else:
+            split_index = last_comma_index
+            
+        # If no dot/comma found, or it is the first character, return original
+        if split_index <= 0:
+            return name_text.strip()
+            
+        # Get one char before and everything after the dot/comma
+        output = name_text[split_index-1:].strip()
         logger.info(f"Extracted name: {output}")
         return output
+        
     except Exception as e:
         logger.error(f"Error processing player name: {str(e)}")
-        return None 
+        return None

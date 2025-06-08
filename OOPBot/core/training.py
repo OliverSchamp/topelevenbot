@@ -506,5 +506,5 @@ class TrainingBot:
         )
         self.logger.info(f"Top eleven tab found at: ({match.center_x}, {match.center_y})")
         if match.center_x is not None:
-            pyautogui.moveTo(match.center_x + match.width + 10, match.center_y + match.height//2, duration=0.5)
+            pyautogui.moveTo(match.top_left_x + match.width + 10, match.center_y, duration=0.5)
             pyautogui.click()

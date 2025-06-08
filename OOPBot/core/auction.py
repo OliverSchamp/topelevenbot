@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 import cv2
+from datetime import datetime
 
 from utils.logging_utils import BotLogger
 from utils.image_processing import (
@@ -43,7 +44,7 @@ from config.auction_config import (
     PLAYSTYLE_TEXT_REGION,
     CONFIDENCE_THRESHOLD
 )
-from interface import TemplateMatch, ScreenRegion, PlayerDetails
+from interface import TemplateMatch, ScreenRegion, PlayerDetails, PlayerAttributes, AuctionPageResult
 
 class AuctionResult:
     """Class to represent auction result"""
@@ -61,6 +62,7 @@ class ComparisonResult:
     VALUE_HIGHER = 'value_higher'
     VALUE_EQUAL = 'value_equal'
     VALUE_LOWER = 'value_lower'
+    WRONG_PLAYSTYLE = "wrong_playstyle"
 
 class AuctionBot:
     """Bot for handling player auctions"""
@@ -72,6 +74,13 @@ class AuctionBot:
         self.evaluated_players: set = set()
         self.should_restart: bool = False
         self.logger.info(f"Initialized auction bot for team: {team_name}")
+        
+        # Load fast trainers dataset
+        try:
+            self.fast_trainers_df = pd.read_csv(FAST_TRAINERS_FILE)
+        except Exception as e:
+            self.logger.error(f"Error loading fast trainers data: {str(e)}")
+            raise
     
     def run(self) -> None:
         """Main auction bot loop"""
@@ -91,7 +100,7 @@ class AuctionBot:
                 
                 # Load fast trainers data
                 self.logger.info("Loading fast trainers data")
-                df_fast_trainers = self._load_fast_trainers()
+                df_fast_trainers = self.fast_trainers_df
                 if df_fast_trainers is None:
                     self.logger.error("Failed to load fast trainers data, preparing for restart")
                     self._prepare_restart()
@@ -110,13 +119,20 @@ class AuctionBot:
                     
                     self.logger.info(f"Starting player evaluation from Y position: {current_y}")
                     while not self.should_restart:
-                        should_continue, new_y = self._process_auction_page(current_y, df_fast_trainers)
-                        if not should_continue:
-                            self.logger.info("Breaking player evaluation loop")
-                            break
+                        player_attrs, status, new_y = self._process_auction_page(current_y, df_fast_trainers)
                         
+                        # Always save player record if we have attributes
+                        if player_attrs:
+                            save_player_record(player_attrs)
+                        
+                        # Handle processing status
+                        if not status:
+                            self.logger.error("Error processing auction page, preparing for restart")
+                            self._prepare_restart()
+                            return
+                        
+                        # Handle new Y position
                         if new_y is not None:
-                            self.logger.info(f"Resetting Y position to {new_y} for new auction")
                             current_y = new_y
                         else:
                             current_y += ROW_HEIGHT
@@ -143,7 +159,7 @@ class AuctionBot:
             )
             self.logger.info(f"Top eleven tab found at: ({match.center_x}, {match.center_y})")
             if match.center_x is not None:
-                pyautogui.moveTo(match.center_x + match.width + 10, match.center_y + match.height//2, duration=0.5)
+                pyautogui.moveTo(match.top_left_x + match.width + 10, match.center_y, duration=0.5)
                 pyautogui.click()
                 time.sleep(0.1)
                 pyautogui.click()
@@ -182,21 +198,6 @@ class AuctionBot:
             self.should_restart = True
             return False
     
-    def _load_fast_trainers(self) -> Optional[pd.DataFrame]:
-        """Load the fast trainers CSV file"""
-        try:
-            if not FAST_TRAINERS_FILE.exists():
-                self.logger.error(f"Fast trainers file not found: {FAST_TRAINERS_FILE}")
-                return None
-                
-            df = pd.read_csv(FAST_TRAINERS_FILE)
-            self.logger.info(f"Loaded fast trainers data with {len(df)} rows")
-            return df
-            
-        except Exception as e:
-            self.logger.error("Error loading fast trainers data", e)
-            return None
-    
     def _get_initial_y_position(self) -> Optional[int]:
         """Get initial Y position for scanning players"""
         try:
@@ -233,124 +234,128 @@ class AuctionBot:
         except Exception as e:
             self.logger.error("Error reordering players", e)
             return False
-    
+        
     def _handle_new_auction(self) -> Optional[int]:
         """Handle waiting for new auction and return new y position"""
         try:
             screenshot = take_screenshot()
             success = self._wait_for_new_auctions(screenshot)  # removed current_y parameter
             if success:
-                # Reorder players and get new y position
-                if not self._reorder_players():
-                    self.should_restart = True
-                    return None
                 return self._get_initial_y_position()
             return None
         except Exception as e:
             self.logger.error("Error handling new auction", e)
             return None
-
-    def _process_auction_page(self, current_y: int, df_fast_trainers: pd.DataFrame) -> Tuple[bool, Optional[int]]:
-        """Process a single page of auctions"""
+    
+    def _process_auction_page(self, current_y: int, df_fast_trainers: pd.DataFrame) -> tuple[PlayerAttributes, bool, Optional[int]]:
+        """Process a single player on the auction page
+        Returns:
+            tuple containing:
+            - PlayerAttributes: Player data (always returned, even if incomplete)
+            - bool: Status (True if processing succeeded, False if error occurred)
+            - Optional[int]: New Y position if auction was reset, None otherwise
+        """
+        # Initialize player attributes at the start
+        player_attrs = PlayerAttributes()
+        
         try:
             screenshot = take_screenshot()
             
-            # Check if we need to wait for new auctions
-            if current_y > pyautogui.size().height - 80:
+            # Check if we've reached bottom of page
+            if current_y > pyautogui.size()[1] - ROW_HEIGHT:
                 self.logger.info(f"Reached bottom of page at Y: {current_y}, waiting for new auctions")
+                exit_bidding = self._exit_bidding()
                 new_y = self._handle_new_auction()
-                return True, new_y
+                return player_attrs, exit_bidding, new_y
             
             # Get player details
-            self.logger.info(f"Getting player details at Y position: {current_y}")
             player_details = self._get_player_details(screenshot, current_y)
-            if not player_details:
-                if self.should_restart:
-                    self.logger.warning("Failed to get player details, restart needed")
-                    return False, None
-                self.logger.info("No player details found, skipping to next player")
-                return True, None
+            if player_details is None:
+                player_attrs.reason_rejected = "Failed to get player details"
+                return player_attrs, False, None
             
+            # Update basic attributes
             name, age, value, quality, positions, playstyle = player_details
-            self.logger.info(f"Player found - Name: {name}, Age: {age}, Value: {value}M, Quality: {quality}%, "
-                           f"Positions: {positions}, Playstyle: {playstyle}")
+            player_attrs.name = name
+            player_attrs.age = age
+            player_attrs.value = value
+            player_attrs.quality = quality
+            player_attrs.positions = positions
+            player_attrs.playstyle = playstyle
             
             # Skip if already evaluated
             if name in self.evaluated_players:
-                self.logger.info(f"Player {name} already evaluated, skipping")
-                return True, None
+                self.logger.info(f"Player already evaluated: {name}")
+                player_attrs.reason_rejected = "Player already evaluated"
+                return player_attrs, self._exit_bidding(name), None
             
-            # Compare values and check conditions
-            self.logger.info("Comparing player values and checking conditions")
-            comparison_result = self._compare_player_value(age, quality, value, df_fast_trainers)
-            self.logger.info(f"Value comparison result: {comparison_result}")
-            
-            # Handle too old players
-            if comparison_result == ComparisonResult.TOO_OLD:
-                self.logger.info("Player too old, waiting for new auction")
-                if not self._exit_bidding():
-                    self.logger.warning("Failed to exit bidding, restart needed")
-                    self.should_restart = True
-                    return False, None
-                
+            # Check age range
+            if age < MIN_AGE:
+                player_attrs.reason_rejected = f"Player too young: {age}"
+                return player_attrs, self._exit_bidding(name), None
+            elif age > MAX_AGE:
+                self.logger.info(f"Player too old: {age}")
+                player_attrs.reason_rejected = f"Player too old: {age}"
+                exit_bidding = self._exit_bidding(name)
                 new_y = self._handle_new_auction()
-                return True, new_y
+                return player_attrs, exit_bidding, new_y
             
-            # Skip players that are too young or outside quality range
-            if comparison_result in [ComparisonResult.TOO_YOUNG, ComparisonResult.OUTSIDE_QUALITY_RANGE]:
-                self.logger.info(f"Skipping player due to {comparison_result}")
-                if not self._exit_bidding():
-                    self.logger.warning("Failed to exit bidding, restart needed")
-                    self.should_restart = True
-                    return False, None
-                return True, None
+            # Check quality range
+            if quality < MIN_QUALITY or quality > MAX_QUALITY:
+                self.logger.info(f"Quality outside range: {quality}")
+                player_attrs.reason_rejected = f"Quality outside range: {quality}"
+                return player_attrs, self._exit_bidding(name), None
             
             # Check positions
-            primary_position = positions[0]
-            secondary_position = positions[1]
-            if primary_position not in DESIRED_POSITIONS and secondary_position not in DESIRED_POSITIONS:
-                self.logger.info(f"Positions {primary_position}/{secondary_position} not in desired positions {DESIRED_POSITIONS}, skipping")
-                if not self._exit_bidding():
-                    self.logger.warning("Failed to exit bidding, restart needed")
-                    self.should_restart = True
-                    return False, None
-                return True, None
+            if not any(pos in DESIRED_POSITIONS for pos in positions if pos):
+                self.logger.info(f"No desired positions: {positions}")
+                player_attrs.reason_rejected = f"No desired positions: {positions}"
+                return player_attrs, self._exit_bidding(name), None
             
-            # Check value comparison
-            if comparison_result not in [ComparisonResult.VALUE_EQUAL, ComparisonResult.VALUE_HIGHER]:
-                self.logger.info(f"Value comparison {comparison_result} not favorable, skipping")
-                if not self._exit_bidding():
-                    self.logger.warning("Failed to exit bidding, restart needed")
-                    self.should_restart = True
-                    return False, None
-                return True, None
+            # Get expected value for age
+            age_col = f"{age}yo"
+            try:
+                quality_row = df_fast_trainers[df_fast_trainers['%'] == str(quality)+'%']
+                expected_value = float(quality_row[age_col].iloc[0])
+                player_attrs.expected_value = expected_value
+            except KeyError:
+                player_attrs.reason_rejected = f"Age {age} not in dataset"
+                return player_attrs, self._exit_bidding(name), None
             
-            # Handle bidding
-            self.logger.info("Starting bidding process")
-            bid_result, bid_amount = self._handle_bidding(comparison_result)
-            self.logger.info(f"Bidding result: {bid_result}, Amount: {bid_amount}")
-            
+            # Compare values
+            if value < expected_value:
+                player_attrs.comparison_result = ComparisonResult.VALUE_LOWER
+                player_attrs.reason_rejected = "Value lower than expected"
+                return player_attrs, self._exit_bidding(name), None
+            elif value == expected_value:
+                player_attrs.comparison_result = ComparisonResult.VALUE_EQUAL
+            elif value > expected_value:
+                player_attrs.comparison_result = ComparisonResult.VALUE_HIGHER
+            else:
+                self.logger.error(f"Value {value} cannot be compared to expected value {expected_value}")
+                player_attrs.comparison_result = ComparisonResult.VALUE_LOWER
+                player_attrs.reason_rejected = "Could not compare value to expected value"
+                return player_attrs, self._exit_bidding(name), None
+
+            # Place bid
+            bid_result, bid_amount = self._handle_bidding()
+            player_attrs.bid_amount = bid_amount
             if bid_result == AuctionResult.ERROR:
-                self.logger.error("Error during bidding, restart needed")
-                self.should_restart = True
-                return False, None
+                player_attrs.reason_rejected = "Error during bidding"
+                return player_attrs, False, None
+            elif bid_result == AuctionResult.SKIPPED:
+                player_attrs.reason_rejected = "Bidding skipped"
+                return player_attrs, self._exit_bidding(name), None
             
-            # Save player record
-            self.logger.info("Saving player record")
-            self._save_player_record(
-                name, age, value, quality, comparison_result,
-                bid_result, bid_amount, positions, playstyle
-            )
+            # Bid was placed
+            player_attrs.was_bid_placed = True
             
-            self.evaluated_players.add(name)
-            self.logger.info(f"Successfully completed evaluation for {name}")
-            
-            return True, None
+            return player_attrs, self._exit_bidding(name), None
             
         except Exception as e:
-            self.logger.error("Error processing auction page", exc_info=True)
-            self.should_restart = True
-            return False, None
+            self.logger.error(f"Error processing auction page: {str(e)}")
+            player_attrs.reason_rejected = f"Exception occurred: {str(e)}"
+            return player_attrs, False, new_y
     
     def _wait_for_new_auctions(self, screenshot: np.ndarray) -> bool:
         """Wait for new auctions to appear"""
@@ -440,7 +445,11 @@ class AuctionBot:
             
             # Get playstyle
             playstyle = self._get_player_playstyle()
-            
+            if playstyle is None:
+                self.logger.error("Could not determine playstyle, issue here")
+            if playstyle == '':
+                self.logger.error("Player should have no playstyle")
+
             return player_name, age, value, quality, positions, playstyle
             
         except Exception as e:
@@ -552,7 +561,7 @@ class AuctionBot:
             self.logger.error("Error comparing values", exc_info=True)
             return ComparisonResult.VALUE_LOWER
     
-    def _handle_bidding(self, comparison_result: str) -> Tuple[str, Optional[float]]:
+    def _handle_bidding(self) -> Tuple[str, Optional[float]]:
         """Handle bidding process"""
         try:
             # Check starting bid amount
@@ -564,16 +573,6 @@ class AuctionBot:
                 
             if starting_bid > MAXIMUM_TOKEN_BUDGET:
                 self.logger.info(f"Starting bid {starting_bid} exceeds maximum budget {MAXIMUM_TOKEN_BUDGET}")
-                if not self._exit_bidding():
-                    self.logger.error("Failed to exit bidding after high starting bid")
-                    return AuctionResult.ERROR, None
-                return AuctionResult.SKIPPED, starting_bid
-            
-            if comparison_result not in [ComparisonResult.VALUE_HIGHER, ComparisonResult.VALUE_EQUAL]:
-                self.logger.info(f"Skipping bid due to unfavorable comparison result: {comparison_result}")
-                if not self._exit_bidding():
-                    self.logger.error("Failed to exit bidding after unfavorable comparison")
-                    return AuctionResult.ERROR, None
                 return AuctionResult.SKIPPED, starting_bid
             
             # Initial bid
@@ -590,15 +589,9 @@ class AuctionBot:
                 
                 if status == 'won':
                     self.logger.info(f"Won auction with final bid of {current_bid} tokens")
-                    if not self._exit_bidding():
-                        self.logger.error("Failed to exit bidding after winning")
-                        return AuctionResult.ERROR, None
                     return AuctionResult.SUCCESS, current_bid
                 elif status == 'lost':
                     self.logger.info(f"Lost auction at bid of {current_bid} tokens")
-                    if not self._exit_bidding():
-                        self.logger.error("Failed to exit bidding after losing")
-                        return AuctionResult.ERROR, None
                     return AuctionResult.LOST, current_bid
                 elif status == 'restart_needed':
                     self.logger.warning("Restart needed during bidding")
@@ -609,13 +602,9 @@ class AuctionBot:
                     next_amount = self._get_next_offer_amount()
                     if next_amount is None:
                         self.logger.error("Could not determine next bid amount")
-                        if not self._exit_bidding():
-                            return AuctionResult.ERROR, None
                         return AuctionResult.LOST, current_bid
                     elif next_amount > MAXIMUM_TOKEN_BUDGET:
                         self.logger.info(f"Next bid amount {next_amount} exceeds budget {MAXIMUM_TOKEN_BUDGET}")
-                        if not self._exit_bidding():
-                            return AuctionResult.ERROR, None
                         return AuctionResult.LOST, current_bid
                     
                     self.logger.info(f"Placing new bid of {next_amount} tokens")
@@ -696,28 +685,22 @@ class AuctionBot:
                 winning_offer_x = winning_offer_template_match.top_left_x
 
                 if winning_offer_x is not None:
-                    self.logger.info("Found winning offer message, auction lost")
-                    if find_and_click(str(IMAGE_PATHS['exit_bidding']), description="exit bidding"):
-                        self.logger.info("Successfully clicked exit bidding button")
-                        time.sleep(1)
-                    return 'lost'
+                    self.logger.info("Found winning offer message, auction finished")
+                    congratulations_template_match = find_on_screen(
+                        str(IMAGE_PATHS['congratulations']),
+                        description="congratulations message"
+                    )
+                    congratulations_x = congratulations_template_match.top_left_x
+                    if congratulations_x is not None:
+                        self.logger.info("Found congratulations message, auction won")
+                    else:
+                        self.logger.info("Could not find congratulations message, auction lost")
+                        return 'lost'
 
                 self.logger.info("Waiting 5 seconds before checking win message")
-                time.sleep(5)
-
-                # Exit the player menu
-                if find_and_click(str(IMAGE_PATHS['exit_bidding']), description="exit bidding"):
-                    self.logger.info("Successfully exited player menu")
-                    time.sleep(5)
-                    self.logger.info("Clicking center screen")
-                    pyautogui.moveTo(pyautogui.size()[0]//2, pyautogui.size()[1]//2, duration=0.01)
-                    pyautogui.click()
-                    time.sleep(5)
-                
-                # Check for win message
+                time.sleep(5)              # find and click the exit win message
                 if find_and_click(str(IMAGE_PATHS['exit_win_message']), description="exit win message"):
                     self.logger.info("Found and clicked win message")
-                    time.sleep(5)
                     return 'won'
                 
                 # If we can't find any of the expected messages, we need to restart
@@ -743,62 +726,11 @@ class AuctionBot:
             self.logger.error("Error monitoring auction status", exc_info=True)
             return 'error'
     
-    def _exit_bidding(self) -> bool:
+    def _exit_bidding(self, name: Optional[str] = None) -> bool:
         """Exit the bidding screen"""
+        if name is not None:
+            self.evaluated_players.add(name)
         return find_and_click(str(IMAGE_PATHS['exit_bidding']), description="exit bidding button")
-    
-    def _save_player_record(
-        self,
-        player_name: str,
-        age: int,
-        value: float,
-        quality: int,
-        comparison_result: str,
-        bid_result: str,
-        bid_amount: Optional[float],
-        positions: List[Optional[str]],
-        playstyle: Optional[str]
-    ) -> None:
-        """Save player evaluation record to JSON file"""
-        try:
-            self.logger.info(f"Creating record for player {player_name}")
-            record = {
-                'name': player_name,
-                'age': age,
-                'value': value,
-                'quality': quality,
-                'comparison_result': comparison_result,
-                'bid_placed': bid_result in [AuctionResult.SUCCESS, AuctionResult.LOST],
-                'primary_position': positions[0],
-                'secondary_position': positions[1],
-                'tertiary_position': positions[2],
-                'playstyle': playstyle,
-                'starting_bid_tokens': bid_amount if bid_result != AuctionResult.ERROR else None,
-                'final_bid_tokens': bid_amount if bid_result in [AuctionResult.SUCCESS, AuctionResult.LOST] else None,
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            # Load existing records
-            self.logger.debug("Loading existing player records")
-            if PLAYER_RECORDS_FILE.exists():
-                with open(PLAYER_RECORDS_FILE, 'r') as f:
-                    records = json.load(f)
-            else:
-                self.logger.info("No existing records file found, creating new one")
-                records = []
-            
-            # Add new record
-            records.append(record)
-            
-            # Save updated records
-            self.logger.debug("Saving updated records to file")
-            with open(PLAYER_RECORDS_FILE, 'w') as f:
-                json.dump(records, f, indent=2)
-                
-            self.logger.info(f"Successfully saved record for player: {player_name}")
-            
-        except Exception as e:
-            self.logger.error(f"Error saving player record for {player_name}", exc_info=True)
     
     def _get_player_playstyle(self) -> Optional[str]:
         """Get player playstyle if available"""
@@ -827,8 +759,31 @@ class AuctionBot:
                 return None
                 
             
-            return playstyle_text.strip() if playstyle_text else None
+            return playstyle_text.strip()
             
         except Exception as e:
             self.logger.error("Error getting player playstyle", exc_info=True)
-            return None 
+            return None
+
+def save_player_record(player: PlayerAttributes) -> None:
+    """Save player record to CSV file"""
+    try:
+        # Convert player model to dict
+        player_dict = player.model_dump()
+        
+        # Convert timestamp to string
+        player_dict['timestamp'] = player_dict['timestamp'].isoformat()
+        
+        # Convert positions list to string
+        player_dict['positions'] = ','.join(filter(None, player_dict['positions']))
+        
+        # Create DataFrame
+        df = pd.DataFrame([player_dict])
+        
+        # Append to CSV
+        file_exists = Path(PLAYER_RECORDS_FILE).exists()
+        df.to_csv(PLAYER_RECORDS_FILE, mode='a', header=not file_exists, index=False)
+        
+    except Exception as e:
+        logger = BotLogger(__name__)
+        logger.error(f"Error saving player record: {str(e)}") 

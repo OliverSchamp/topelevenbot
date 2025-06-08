@@ -63,3 +63,6 @@ config/credentials.py
 .DS_Store
 Thumbs.db
 desktop.ini 
+
+# player records
+player_records.csv

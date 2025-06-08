@@ -57,9 +57,6 @@ def main():
             print("\nRestarting bot in 3 seconds...")
             time.sleep(3)
             
-            # Try to restart Top Eleven
-            if find_and_click(str("img/general/top_eleven.jpg"), description="restart top eleven"):
-                time.sleep(20)  # Wait for game to load
             
         except KeyboardInterrupt:
             print("\nBot stopped by user")

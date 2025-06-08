@@ -66,7 +66,7 @@ DESIRED_POSITIONS = ["MC", "AMC", "DMC", "ML"]  # Only bid on players in these p
 MIN_QUALITY = 0  # Minimum quality percentage to consider
 MAX_QUALITY = 100  # Maximum quality percentage to consider
 MIN_AGE = 18  # Minimum age to consider
-MAX_AGE = 27  # Maximum age to consider
+MAX_AGE = 21  # Maximum age to consider
 
 # File Paths
 IMAGE_PATHS = {
@@ -85,12 +85,12 @@ IMAGE_PATHS = {
     'exit_win_message': Path("img/auto_auction/exit_win_message.jpg"),
     'winning_offer': Path("img/auto_auction/winning_offer.jpg"),
     'playstyles': Path("img/auto_auction/playstyle.jpg"),
-    'offers': Path("img/auto_auction/offers.jpg"),
+    'offers': Path("img/auto_auction/offers.jpg")
 }
 
 # OCR Configuration
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Record Keeping
-PLAYER_RECORDS_FILE = Path('player_records.json')
+PLAYER_RECORDS_FILE = Path('player_records.csv')
 FAST_TRAINERS_FILE = Path("fast_trainer_sheet/fast_trainers.csv") 

@@ -106,6 +106,10 @@ class TopElevenBot:
             pyautogui.press('f11')
             time.sleep(0.3)
 
+            #if has been restarted
+            if find_and_click(str("img/general/top_eleven.jpg"), description="restart top eleven"):
+                time.sleep(20)  # Wait for game to load
+
             # click at [0, 500]
             pyautogui.moveTo(0, 500, duration=0.5)
             pyautogui.click()
