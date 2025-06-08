@@ -1,0 +1,7 @@
+﻿Playstyle,Position,Min quality,Max quality,Budget
+y,MC,0,85,20
+n,MC,0,85,10
+y,AMC,0,85,18
+n,AMC,0,85,9
+y,DMC,0,85,12
+n,DMC,0,85,6
