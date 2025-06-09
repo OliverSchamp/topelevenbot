@@ -42,17 +42,25 @@ from config.auction_config import (
     PLAYER_RECORDS_FILE,
     FAST_TRAINERS_FILE,
     PLAYSTYLE_TEXT_REGION,
-    CONFIDENCE_THRESHOLD
+    CONFIDENCE_THRESHOLD,
+    TOTAL_TOKENS_AVAILABLE_REGION,
+    TOTAL_MONEY_AVAILABLE_REGION,
+    MAXIMUM_MONEY_BUDGET,
+    AUCTION_WON_PIXEL,
+    AUCTION_WON_COLOR
 )
-from interface import TemplateMatch, ScreenRegion, PlayerDetails, PlayerAttributes, AuctionPageResult
+from interface import TemplateMatch, ScreenRegion, PlayerDetails, PlayerAttributes, BidDetails
 
 class AuctionResult:
     """Class to represent auction result"""
-    SUCCESS = 'success'
-    LOST = 'lost'
-    SKIPPED = 'skipped'
-    ERROR = 'error'
+    SUCCESS = 'success_auction'
+    LOST = 'lost_auction'
+    ERROR = 'error_during_bidding'
     RESTART_NEEDED = 'restart_needed'
+    INSUFFICIENT_TOKENS = 'insufficient_tokens'
+    INSUFFICIENT_MONEY = 'insufficient_money'
+    EXCEEDS_TOKEN_BUDGET = 'exceeds_token_budget'
+    EXCEEDS_MONEY_BUDGET = 'exceeds_money_budget'
 
 class ComparisonResult:
     """Class to represent value comparison results"""
@@ -73,7 +81,10 @@ class AuctionBot:
         self.logger = BotLogger(__name__)
         self.evaluated_players: set = set()
         self.should_restart: bool = False
+        self.available_tokens = 0.0
+        self.available_money = 0.0
         self.logger.info(f"Initialized auction bot for team: {team_name}")
+        self._last_auction_status = None
         
         # Load fast trainers dataset
         try:
@@ -110,6 +121,8 @@ class AuctionBot:
                     # Start from the first row position
                     self.logger.info("Getting initial Y position for player scanning")
                     current_y = self._get_initial_y_position()
+                    self.available_tokens = self._get_available_tokens()
+                    self.available_money = self._get_available_money()
                     if current_y is None:
                         if self.should_restart:
                             self.logger.info("Restart needed after getting initial position")
@@ -123,7 +136,11 @@ class AuctionBot:
                         
                         # Always save player record if we have attributes
                         if player_attrs:
-                            save_player_record(player_attrs)
+                            if player_attrs.reason_rejected != "Player already evaluated":
+                                save_player_record(player_attrs)
+                            if player_attrs.was_bid_placed:
+                                self.available_tokens = self._get_available_tokens()
+                                self.available_money = self._get_available_money()
                         
                         # Handle processing status
                         if not status:
@@ -264,9 +281,8 @@ class AuctionBot:
             # Check if we've reached bottom of page
             if current_y > pyautogui.size()[1] - ROW_HEIGHT:
                 self.logger.info(f"Reached bottom of page at Y: {current_y}, waiting for new auctions")
-                exit_bidding = self._exit_bidding()
                 new_y = self._handle_new_auction()
-                return player_attrs, exit_bidding, new_y
+                return player_attrs, True, new_y
             
             # Get player details
             player_details = self._get_player_details(screenshot, current_y)
@@ -338,19 +354,20 @@ class AuctionBot:
                 return player_attrs, self._exit_bidding(name), None
 
             # Place bid
-            bid_result, bid_amount = self._handle_bidding()
+            bid_result, bid_amount = self._handle_bidding(player_attrs)
             player_attrs.bid_amount = bid_amount
             if bid_result == AuctionResult.ERROR:
-                player_attrs.reason_rejected = "Error during bidding"
+                player_attrs.reason_rejected = bid_result
                 return player_attrs, False, None
-            elif bid_result == AuctionResult.SKIPPED:
-                player_attrs.reason_rejected = "Bidding skipped"
+            elif bid_result in [AuctionResult.INSUFFICIENT_TOKENS, AuctionResult.INSUFFICIENT_MONEY, 
+                              AuctionResult.EXCEEDS_TOKEN_BUDGET, AuctionResult.EXCEEDS_MONEY_BUDGET]:
+                player_attrs.reason_rejected = bid_result
                 return player_attrs, self._exit_bidding(name), None
-            
+
             # Bid was placed
             player_attrs.was_bid_placed = True
             
-            return player_attrs, self._exit_bidding(name), None
+            return player_attrs, self._exit_bidding(name), self._get_initial_y_position()
             
         except Exception as e:
             self.logger.error(f"Error processing auction page: {str(e)}")
@@ -401,7 +418,6 @@ class AuctionBot:
             )
             name_x = name_template_match.top_left_x
             name_center_x = name_template_match.center_x
-            name_center_y = name_template_match.center_y
             name_w = name_template_match.width
 
             age_template_match = find_on_screen(
@@ -431,7 +447,7 @@ class AuctionBot:
             
             value_region = screenshot[current_y:current_y+ROW_HEIGHT, value_x:value_x+value_w]
             value_text = extract_text_from_region(value_region)
-            value = extract_numeric_value(value_text)
+            value = extract_numeric_value(value_text, money=True)
             
             pyautogui.moveTo(name_center_x, current_y + ROW_HEIGHT//2, duration=0.5)
             pyautogui.click()
@@ -448,7 +464,8 @@ class AuctionBot:
             if playstyle is None:
                 self.logger.error("Could not determine playstyle, issue here")
             if playstyle == '':
-                self.logger.error("Player should have no playstyle")
+                self.logger.info("Player should have no playstyle")
+                playstyle = None
 
             return player_name, age, value, quality, positions, playstyle
             
@@ -561,62 +578,118 @@ class AuctionBot:
             self.logger.error("Error comparing values", exc_info=True)
             return ComparisonResult.VALUE_LOWER
     
-    def _handle_bidding(self) -> Tuple[str, Optional[float]]:
+    def _handle_bidding(self, player_attrs: PlayerAttributes) -> Tuple[str, Optional[float]]:
         """Handle bidding process"""
         try:
-            # Check starting bid amount
-            self.logger.info("Getting starting bid amount")
-            starting_bid = self._get_next_offer_amount()
-            if starting_bid is None:
-                self.logger.error("Could not determine starting bid amount")
+            # Reset last auction status
+            self._last_auction_status = None
+            
+            # Create BidDetails object to store bid information
+            bid_details = BidDetails(
+                token_budget=self.available_tokens,
+                money_budget=self.available_money
+            )
+            
+            # Check starting bid amounts for both tokens and money
+            self.logger.info("Getting starting bid amounts")
+            starting_bid_tokens = self._get_next_offer_amount()
+            starting_bid_money = self._get_next_offer_money()
+            
+            if starting_bid_tokens is None or starting_bid_money is None:
+                self.logger.error("Could not determine starting bid amounts")
                 return AuctionResult.ERROR, None
-                
-            if starting_bid > MAXIMUM_TOKEN_BUDGET:
-                self.logger.info(f"Starting bid {starting_bid} exceeds maximum budget {MAXIMUM_TOKEN_BUDGET}")
-                return AuctionResult.SKIPPED, starting_bid
+            
+            # Store starting bid amounts
+            bid_details.starting_bid_tokens = starting_bid_tokens
+            bid_details.starting_bid_money = starting_bid_money
+            bid_details.current_bid_tokens = starting_bid_tokens
+            bid_details.current_bid_money = starting_bid_money
+            
+            # Get effective budget based on available tokens and CSV allocation
+            effective_budget = self._get_effective_budget(
+                quality=player_attrs.quality,
+                positions=player_attrs.positions,
+                playstyle=player_attrs.playstyle,
+                age=player_attrs.age
+            )
+            
+            # Check if we can afford both tokens and money
+            if starting_bid_tokens > effective_budget:
+                self.logger.info(f"Starting bid tokens {starting_bid_tokens} exceeds effective budget {effective_budget}")
+                player_attrs.bid_details = bid_details
+                return AuctionResult.EXCEEDS_TOKEN_BUDGET, starting_bid_tokens
+            
+            money_budget = MAXIMUM_MONEY_BUDGET
+            if self.available_money < MAXIMUM_MONEY_BUDGET:
+                money_budget = self.available_money
+
+            if starting_bid_money > money_budget:
+                self.logger.info(f"Starting bid money {starting_bid_money}M exceeds money budget {money_budget}M")
+                player_attrs.bid_details = bid_details
+                return AuctionResult.EXCEEDS_MONEY_BUDGET, starting_bid_tokens
             
             # Initial bid
-            self.logger.info(f"Placing initial bid of {starting_bid} tokens")
+            self.logger.info(f"Placing initial bid of {starting_bid_tokens} tokens and {starting_bid_money}M")
             if not find_and_click(str(IMAGE_PATHS['bid']), description="bid button"):
                 self.logger.error("Could not find bid button for initial bid")
                 return AuctionResult.ERROR, None
             
-            current_bid = starting_bid
             self.logger.info("Starting auction monitoring loop")
+            time.sleep(1) # wait for initial bid to be registered
             while True:
                 status = self._monitor_auction_status()
                 self.logger.info(f"Current auction status: {status}")
                 
                 if status == 'won':
-                    self.logger.info(f"Won auction with final bid of {current_bid} tokens")
-                    return AuctionResult.SUCCESS, current_bid
+                    self._last_auction_status = status  # Store the status for _exit_bidding
+                    self.logger.info(f"Won auction with final bid of {bid_details.current_bid_tokens} tokens and {bid_details.current_bid_money}M")
+                    player_attrs.bid_details = bid_details
+                    return AuctionResult.SUCCESS, bid_details.current_bid_tokens
                 elif status == 'lost':
-                    self.logger.info(f"Lost auction at bid of {current_bid} tokens")
-                    return AuctionResult.LOST, current_bid
+                    self.logger.info(f"Lost auction at bid of {bid_details.current_bid_tokens} tokens and {bid_details.current_bid_money}M")
+                    player_attrs.bid_details = bid_details
+                    return AuctionResult.LOST, bid_details.current_bid_tokens
                 elif status == 'restart_needed':
                     self.logger.warning("Restart needed during bidding")
                     self.should_restart = True
-                    return AuctionResult.RESTART_NEEDED, current_bid
+                    player_attrs.bid_details = bid_details
+                    return AuctionResult.RESTART_NEEDED, bid_details.current_bid_tokens
                 elif status == 'outbid':
-                    self.logger.info("Outbid, checking next offer amount")
-                    next_amount = self._get_next_offer_amount()
-                    if next_amount is None:
-                        self.logger.error("Could not determine next bid amount")
-                        return AuctionResult.LOST, current_bid
-                    elif next_amount > MAXIMUM_TOKEN_BUDGET:
-                        self.logger.info(f"Next bid amount {next_amount} exceeds budget {MAXIMUM_TOKEN_BUDGET}")
-                        return AuctionResult.LOST, current_bid
+                    self.logger.info("Outbid, checking next offer amounts")
+                    next_tokens = self._get_next_offer_amount()
+                    next_money = self._get_next_offer_money()
                     
-                    self.logger.info(f"Placing new bid of {next_amount} tokens")
+                    if next_tokens is None or next_money is None:
+                        self.logger.error("Could not determine next bid amounts")
+                        player_attrs.bid_details = bid_details
+                        return AuctionResult.ERROR, bid_details.current_bid_tokens
+                        
+                    # Check if we can afford both tokens and money
+                    if next_tokens > effective_budget:
+                        self.logger.info(f"Next bid tokens {next_tokens} exceeds effective budget {effective_budget}")
+                        player_attrs.bid_details = bid_details
+                        return AuctionResult.LOST, bid_details.current_bid_tokens
+                        
+                    if next_money > money_budget:
+                        self.logger.info(f"Next bid money {next_money}M exceeds maximum money budget {MAXIMUM_MONEY_BUDGET}M")
+                        player_attrs.bid_details = bid_details
+                        return AuctionResult.LOST, bid_details.current_bid_tokens
+                    
+                    self.logger.info(f"Placing new bid of {next_tokens} tokens and {next_money}M")
                     if not find_and_click(str(IMAGE_PATHS['bid']), description="bid button"):
                         self.logger.error("Could not find bid button for next bid")
+                        player_attrs.bid_details = bid_details
                         return AuctionResult.ERROR, None
-                    current_bid = next_amount
+                        
+                    bid_details.current_bid_tokens = next_tokens
+                    bid_details.current_bid_money = next_money
                 
                 time.sleep(CLICK_DELAY)
                 
         except Exception as e:
             self.logger.error("Error in bidding process", exc_info=True)
+            if 'bid_details' in locals():
+                player_attrs.bid_details = bid_details
             return AuctionResult.ERROR, None
     
     def _get_next_offer_amount(self) -> Optional[float]:
@@ -666,15 +739,22 @@ class AuctionBot:
         try:
             screenshot = take_screenshot()
             
-            # Check if auction ended
+            # Find the next offer display
             next_offer_template_match = find_on_screen(
                 str(IMAGE_PATHS['next_offer']),
                 description="next offer"
             )
             next_offer_x = next_offer_template_match.top_left_x
+
+            # Check if still in first place
+            self.logger.debug("Checking first place status")
+            first_place_region = screenshot[
+                FIRST_PLACE_BOX['y1']:FIRST_PLACE_BOX['y2'],
+                FIRST_PLACE_BOX['x1']:FIRST_PLACE_BOX['x2']
+            ]
+            first_place_text = extract_text_from_region(first_place_region)
             
-            
-            if next_offer_x is None:
+            if next_offer_x is None or self.team_name not in first_place_text:
                 self.logger.info("Next offer display not found, checking auction end conditions")
 
                 # Check for winning offer template
@@ -686,38 +766,30 @@ class AuctionBot:
 
                 if winning_offer_x is not None:
                     self.logger.info("Found winning offer message, auction finished")
-                    congratulations_template_match = find_on_screen(
-                        str(IMAGE_PATHS['congratulations']),
-                        description="congratulations message"
-                    )
-                    congratulations_x = congratulations_template_match.top_left_x
-                    if congratulations_x is not None:
-                        self.logger.info("Found congratulations message, auction won")
+                    time.sleep(2)  # wait for win/loss status to appear
+                    # take another screenshot
+                    screenshot = take_screenshot()
+                    # Check the specific pixel color to determine if we won
+                    pixel_color = screenshot[AUCTION_WON_PIXEL['y'], AUCTION_WON_PIXEL['x']]
+                    if (pixel_color[2] == AUCTION_WON_COLOR['r'] and 
+                        pixel_color[1] == AUCTION_WON_COLOR['g'] and 
+                        pixel_color[0] == AUCTION_WON_COLOR['b']):  # OpenCV uses BGR format
+                        self.logger.info("Won auction (detected by pixel color)")
+                        # Try to click exit message but return 'won' regardless
+                        time.sleep(5)
+                        find_and_click(str(IMAGE_PATHS['exit_win_message']), description="exit win message")
+                        return 'won'
                     else:
-                        self.logger.info("Could not find congratulations message, auction lost")
+                        self.logger.info("Lost auction (detected by pixel color)")
                         return 'lost'
 
-                self.logger.info("Waiting 5 seconds before checking win message")
-                time.sleep(5)              # find and click the exit win message
-                if find_and_click(str(IMAGE_PATHS['exit_win_message']), description="exit win message"):
-                    self.logger.info("Found and clicked win message")
-                    return 'won'
-                
+                if self.team_name not in first_place_text:
+                    self.logger.info(f"Team {self.team_name} no longer in first place")
+                    return 'outbid'
+
                 # If we can't find any of the expected messages, we need to restart
                 self.logger.error("Cannot find win/loss messages - restart needed")
                 return 'restart_needed'
-
-            # Check if still in first place
-            self.logger.debug("Checking first place status")
-            first_place_region = screenshot[
-                FIRST_PLACE_BOX['y1']:FIRST_PLACE_BOX['y2'],
-                FIRST_PLACE_BOX['x1']:FIRST_PLACE_BOX['x2']
-            ]
-            first_place_text = extract_text_from_region(first_place_region)
-            
-            if self.team_name not in first_place_text:
-                self.logger.info(f"Team {self.team_name} no longer in first place")
-                return 'outbid'
             
             self.logger.debug("Still in first place")
             return 'ongoing'
@@ -730,14 +802,22 @@ class AuctionBot:
         """Exit the bidding screen"""
         if name is not None:
             self.evaluated_players.add(name)
-        return find_and_click(str(IMAGE_PATHS['exit_bidding']), description="exit bidding button")
+            
+        success = find_and_click(str(IMAGE_PATHS['exit_bidding']), description="exit bidding button")
+        
+        # If we successfully exited bidding and this was a won auction, check for exit win message
+        if success and self._last_auction_status == 'won':
+            time.sleep(5)  # wait for potential exit win message
+            find_and_click(str(IMAGE_PATHS['exit_win_message']), description="exit win message after bidding")
+            
+        return success
     
     def _get_player_playstyle(self) -> Optional[str]:
         """Get player playstyle if available"""
         try:
             # Find and click playstyles button
             self.logger.debug("Looking for playstyles button")
-            if not find_and_click(str(IMAGE_PATHS['playstyles']), description="playstyles button"):
+            if not find_and_click(str(IMAGE_PATHS['playstyles']), description="playstyles button", threshold=0.7):
                 self.logger.info("No playstyles button found - player has no playstyle")
                 return None
             
@@ -749,6 +829,7 @@ class AuctionBot:
                 PLAYSTYLE_TEXT_REGION['x1']:PLAYSTYLE_TEXT_REGION['x2']
             ]
             playstyle_text = extract_text_from_region(playstyle_region)
+            playstyle_text = playstyle_text.strip().upper()
 
             self.logger.info(f"Found playstyle: {playstyle_text}")
             
@@ -759,10 +840,195 @@ class AuctionBot:
                 return None
                 
             
-            return playstyle_text.strip()
+            return playstyle_text
             
         except Exception as e:
             self.logger.error("Error getting player playstyle", exc_info=True)
+            return None
+
+    def _get_available_tokens(self) -> Optional[float]:
+        """Get the number of tokens available from the screen"""
+        try:
+            screenshot = take_screenshot()
+            
+            # Extract ROI from screenshot
+            roi_image = screenshot[
+                TOTAL_TOKENS_AVAILABLE_REGION['y1']:TOTAL_TOKENS_AVAILABLE_REGION['y2'],
+                TOTAL_TOKENS_AVAILABLE_REGION['x1']:TOTAL_TOKENS_AVAILABLE_REGION['x2']
+            ]
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
+            
+            # Apply thresholding
+            gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+            
+            # Perform OCR
+            text = extract_text_from_region(gray, preprocess=False)
+            
+            # Extract numeric value
+            amount = extract_numeric_value(text)
+            if amount is not None:
+                self.logger.info(f"Available tokens: {amount}")
+                return amount
+            
+            self.logger.error(f"Could not extract numeric value from text: {text}")
+            return None
+            
+        except Exception as e:
+            self.logger.error("Error getting available tokens", exc_info=True)
+            return None
+
+    def _get_effective_budget(self, quality: Optional[int] = None, positions: Optional[List[str]] = None, playstyle: Optional[str] = None, age: Optional[int] = None) -> float:
+        """
+        Get the effective budget for bidding, considering:
+        1. Maximum token budget from config
+        2. Available tokens
+        3. Dynamic budget from CSV based on player attributes
+        """
+        self.logger.info(f"Getting effective budget for positions {positions} age {age} quality {quality}% playstyle {playstyle}")
+        # Start with the maximum configured budget
+        budget = MAXIMUM_TOKEN_BUDGET
+        
+        # If we have less tokens available than the budget, use that instead
+        if self.available_tokens < budget:
+            self.logger.info(f"Available tokens ({self.available_tokens}) less than maximum budget ({budget})")
+            budget = self.available_tokens
+            
+        # Get dynamic budget from CSV if we have all required attributes
+        if quality is not None and positions and age is not None:
+            try:
+                df = pd.read_csv('fast_trainer_sheet/budget.csv')
+                
+                # Convert playstyle to "None" if it's None or empty
+                playstyle_value = "None" if not playstyle else playstyle.upper()
+                
+                max_csv_budget = 0.0
+                best_position = None
+                
+                # Check each position in order (primary, secondary, tertiary)
+                for position in positions:
+                    if not position:  # Skip empty positions
+                        continue
+                        
+                    # Filter rows based on position, quality range, and age
+                    matching_rows = df[
+                        (df['Position'] == position) & 
+                        (df['Min quality'] <= quality) & 
+                        (df['Max quality'] > quality) &
+                        (df['Age'] == age)
+                    ]
+                    
+                    # Further filter by playstyle if we have matching rows
+                    if not matching_rows.empty:
+                        self.logger.info(f"Found {len(matching_rows)} rows for position {position} age {age} quality {quality}% playstyle {playstyle_value}")
+                        playstyle = None if playstyle == 'None' else playstyle
+                        
+                        playstyle_rows = matching_rows[matching_rows['Playstyle'] == playstyle_value]
+                        # if playstyle is not none, also check for any rows with playstyle = 'YES'. 'YES' stands for any playstyle
+                        if playstyle is not None:
+                            playstyle_rows = pd.concat([playstyle_rows, matching_rows[matching_rows['Playstyle'] == 'YES']])
+                        
+                        # If no rows match the playstyle, fall back to "None" playstyle
+                        if playstyle_rows.empty:
+                            playstyle_rows = matching_rows[matching_rows['Playstyle'] == "None"]
+                        
+                        if not playstyle_rows.empty:
+                            csv_budget = float(playstyle_rows.iloc[0]['Budget'])
+                            if csv_budget > max_csv_budget:
+                                max_csv_budget = csv_budget
+                                best_position = position
+                
+                # If we found a valid budget in the CSV
+                if max_csv_budget > 0:
+                    if max_csv_budget < budget:
+                        self.logger.info(f"CSV budget ({max_csv_budget}) for {best_position} age {age} quality {quality}% playstyle {playstyle_value} less than current budget ({budget})")
+                        budget = max_csv_budget
+                    else:
+                        self.logger.info(f"CSV budget ({max_csv_budget}) for {best_position} age {age} quality {quality}% playstyle {playstyle_value} higher than current budget ({budget}), keeping current budget")
+                else:
+                    self.logger.warning(f"No budget found for any position in {positions} age {age} quality {quality}% playstyle {playstyle_value}")
+                
+            except Exception as e:
+                self.logger.error(f"Error reading budget from CSV: {str(e)}")
+        
+        return budget
+
+    def _get_available_money(self) -> Optional[float]:
+        """Get the amount of money available from the screen"""
+        try:
+            screenshot = take_screenshot()
+            
+            # Extract ROI from screenshot
+            roi_image = screenshot[
+                TOTAL_MONEY_AVAILABLE_REGION['y1']:TOTAL_MONEY_AVAILABLE_REGION['y2'],
+                TOTAL_MONEY_AVAILABLE_REGION['x1']:TOTAL_MONEY_AVAILABLE_REGION['x2']
+            ]
+            
+            # Convert to grayscale
+            gray = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
+            
+            # Apply thresholding
+            gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+            
+            # Perform OCR
+            text = extract_text_from_region(gray, preprocess=False)
+            
+            # Extract numeric value and convert K to M if needed
+            self.logger.info(f"Available money text: {text}")
+            amount = extract_numeric_value(text, money=True)
+            if amount is not None:
+                self.logger.info(f"Available money: {amount}M")
+                return amount
+            
+            self.logger.error(f"Could not extract numeric value from text: {text}")
+            return None
+            
+        except Exception as e:
+            self.logger.error("Error getting available money", exc_info=True)
+            return None
+
+    def _get_next_offer_money(self) -> Optional[float]:
+        """Get the money amount needed for the next offer"""
+        try:
+            screenshot = take_screenshot()
+            
+            # Find the next offer money display
+            self.logger.debug("Looking for next offer money display")
+            next_offer_template_match = find_on_screen(
+                str(IMAGE_PATHS['next_offer_moneys']),
+                description="next offer money"
+            )
+            next_offer_x = next_offer_template_match.top_left_x
+            next_offer_y = next_offer_template_match.top_left_y
+            next_offer_w = next_offer_template_match.width
+            next_offer_h = next_offer_template_match.height
+            
+            if any(x is None for x in [next_offer_x, next_offer_y, next_offer_w, next_offer_h]):
+                self.logger.error("Could not find next offer money display")
+                return None
+            
+            # Next offer region is 60 pixels to the right
+            next_offer_region = screenshot[
+                next_offer_y-20:next_offer_y+next_offer_h+20,
+                next_offer_x+next_offer_w:next_offer_x+next_offer_w+120
+            ]
+            
+            # Preprocess the image
+            next_offer_region = cv2.inRange(next_offer_region, (230, 230, 230), (255, 255, 255))
+            next_offer_text = extract_text_from_region(next_offer_region, preprocess=False)
+            
+            # Extract numeric value and convert K to M if needed
+            amount = extract_numeric_value(next_offer_text, money=True)
+            if amount is not None:
+                self.logger.info(f"Next offer money amount: {amount}M")
+                return amount
+            
+            self.logger.error(f"Could not extract numeric value from text: {next_offer_text}")
+            return None
+            
+        except Exception as e:
+            self.logger.error("Error getting next offer money amount", exc_info=True)
             return None
 
 def save_player_record(player: PlayerAttributes) -> None:
@@ -777,6 +1043,28 @@ def save_player_record(player: PlayerAttributes) -> None:
         # Convert positions list to string
         player_dict['positions'] = ','.join(filter(None, player_dict['positions']))
         
+        # Extract bid details if they exist
+        if player_dict.get('bid_details'):
+            bid_details = player_dict.pop('bid_details')
+            player_dict.update({
+                'starting_bid_tokens': bid_details.get('starting_bid_tokens'),
+                'current_bid_tokens': bid_details.get('current_bid_tokens'),
+                'starting_bid_money': bid_details.get('starting_bid_money'),
+                'current_bid_money': bid_details.get('current_bid_money'),
+                'token_budget': bid_details.get('token_budget'),
+                'money_budget': bid_details.get('money_budget')
+            })
+        else:
+            # Add empty values for bid details fields
+            player_dict.update({
+                'starting_bid_tokens': None,
+                'current_bid_tokens': None,
+                'starting_bid_money': None,
+                'current_bid_money': None,
+                'token_budget': None,
+                'money_budget': None
+            })
+        
         # Create DataFrame
         df = pd.DataFrame([player_dict])
         
@@ -787,3 +1075,5 @@ def save_player_record(player: PlayerAttributes) -> None:
     except Exception as e:
         logger = BotLogger(__name__)
         logger.error(f"Error saving player record: {str(e)}") 
+
+

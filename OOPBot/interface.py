@@ -5,6 +5,8 @@ Interface definitions using Pydantic models for the Top Eleven Bot
 from typing import Optional, Tuple, List
 from pydantic import BaseModel, Field
 from datetime import datetime
+import os
+import csv
 
 class ScreenRegion(BaseModel):
     """Region on the screen defined by coordinates"""
@@ -43,22 +45,27 @@ class TrainingProgress(BaseModel):
     progress: Optional[int] = Field(None, description="Current training progress percentage")
     greens_budget: Optional[int] = Field(None, description="Available greens for condition restoration")
 
-class PlayerAttributes(BaseModel):
-    """Complete record of a player's attributes from auction"""
-    timestamp: datetime = Field(default_factory=datetime.now, description="When the player was evaluated")
-    name: Optional[str] = Field(None, description="Player's name")
-    age: Optional[int] = Field(None, description="Player's age")
-    value: Optional[float] = Field(None, description="Player's value in millions")
-    quality: Optional[int] = Field(None, description="Player's quality rating")
-    positions: List[Optional[str]] = Field(default_factory=list, description="List of player's positions")
-    playstyle: Optional[str] = Field(None, description="Player's playstyle")
-    expected_value: Optional[float] = Field(None, description="Expected value based on quality/age")
-    comparison_result: Optional[str] = Field(None, description="Result of value comparison")
-    reason_rejected: Optional[str] = Field(None, description="Reason if player was rejected")
-    was_bid_placed: bool = Field(False, description="Whether a bid was placed on this player")
-    bid_amount: Optional[float] = Field(None, description="Amount of bid placed on this player")
+class BidDetails(BaseModel):
+    """Details about a bid attempt including budgets and amounts"""
+    starting_bid_tokens: Optional[float] = Field(None, description="Initial token bid amount")
+    current_bid_tokens: Optional[float] = Field(None, description="Final/current token bid amount")
+    starting_bid_money: Optional[float] = Field(None, description="Initial money bid amount")
+    current_bid_money: Optional[float] = Field(None, description="Final/current money bid amount")
+    token_budget: Optional[float] = Field(None, description="Available token budget at time of bid")
+    money_budget: Optional[float] = Field(None, description="Available money budget at time of bid")
 
-class AuctionPageResult(BaseModel):
-    """Result of processing an auction page, including player data and new Y position"""
-    player_attributes: Optional[PlayerAttributes] = Field(None, description="Player attributes if found")
-    new_y_position: Optional[int] = Field(None, description="New Y position for next scan, if auction reset") 
+class PlayerAttributes(BaseModel):
+    """Player attributes and auction details"""
+    timestamp: datetime = Field(default_factory=datetime.now, description="When the player was evaluated")
+    name: Optional[str] = Field(None, description="Player name")
+    age: Optional[int] = Field(None, description="Player age")
+    quality: Optional[int] = Field(None, description="Player quality percentage")
+    value: Optional[float] = Field(None, description="Player value in millions")
+    expected_value: Optional[float] = Field(None, description="Expected value from fast trainers sheet")
+    positions: List[str] = Field(default_factory=list, description="Player positions")
+    playstyle: Optional[str] = Field(None, description="Player playstyle")
+    comparison_result: Optional[str] = Field(None, description="Result of value comparison")
+    reason_rejected: Optional[str] = Field(None, description="Reason for rejecting the player")
+    was_bid_placed: bool = Field(False, description="Whether a bid was placed")
+    bid_amount: Optional[float] = Field(None, description="Amount of tokens bid")
+    bid_details: Optional[BidDetails] = Field(None, description="Detailed information about the bid attempt")

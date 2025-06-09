@@ -38,7 +38,7 @@ def extract_text_from_region(image: np.ndarray, preprocess: bool = True) -> str:
         logger.error(f"Error in OCR text extraction: {str(e)}")
         return ""
 
-def extract_numeric_value(text: str) -> Optional[float]:
+def extract_numeric_value(text: str, money: bool = False) -> Optional[float]:
     """Extract numeric value and handle K/M conversion"""
     try:
         # Remove all non-numeric characters except K, M, and decimal point
@@ -52,9 +52,12 @@ def extract_numeric_value(text: str) -> Optional[float]:
         number = float(match.group(1))
         unit = match.group(2)
         
-        # Convert K to M if necessary
-        if unit == 'K':
-            return number / 1000
+        if money:
+            # Convert K to M if necessary
+            if unit == 'K':
+                return number / 1000
+            if unit == None:
+                return number / 1000000
         return number
     except Exception as e:
         logger.error(f"Error extracting numeric value from text '{text}': {str(e)}")

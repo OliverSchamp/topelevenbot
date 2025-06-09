@@ -43,7 +43,27 @@ PLAYSTYLE_TEXT_REGION = {
 CONFIDENCE_THRESHOLD = 0.8
 
 # Bidding
-MAXIMUM_TOKEN_BUDGET = 4
+MAXIMUM_TOKEN_BUDGET = 100000.0
+# TODO: add budget for money as well
+MAXIMUM_MONEY_BUDGET = 1000000.0 #M
+
+# ROIs for the tokens and money that I have left
+TOTAL_TOKENS_AVAILABLE_REGION = {
+    'x1': 953,
+    'y1': 18,
+    'x2': 1046,
+    'y2': 64
+}
+TOTAL_MONEY_AVAILABLE_REGION = {
+    'x1': 1766,
+    'y1': 19,
+    'x2': 1862,
+    'y2': 61
+}
+
+AUCTION_WON_PIXEL = {'x': 1455, 'y': 562}
+
+AUCTION_WON_COLOR = {'r': 65, 'g': 185, 'b': 55}
 
 # Valid positions in the game
 VALID_POSITIONS = [
@@ -62,11 +82,11 @@ VALID_POSITIONS = [
 ]
 
 # Player filtering settings
-DESIRED_POSITIONS = ["MC", "AMC", "DMC", "ML"]  # Only bid on players in these positions
+DESIRED_POSITIONS = VALID_POSITIONS #["MC", "AMC", "DMC", "ML"]  # Only bid on players in these positions
 MIN_QUALITY = 0  # Minimum quality percentage to consider
 MAX_QUALITY = 100  # Maximum quality percentage to consider
 MIN_AGE = 18  # Minimum age to consider
-MAX_AGE = 21  # Maximum age to consider
+MAX_AGE = 22  # Maximum age to consider
 
 # File Paths
 IMAGE_PATHS = {
@@ -82,6 +102,7 @@ IMAGE_PATHS = {
     'exit_bidding': Path("img/auto_auction/exit_bidding.jpg"),
     'name': Path("img/auto_auction/name.jpg"),
     'next_offer': Path("img/auto_auction/next_offer.jpg"),
+    'next_offer_moneys': Path("img/auto_auction/next_offer_moneys.jpg"),
     'exit_win_message': Path("img/auto_auction/exit_win_message.jpg"),
     'winning_offer': Path("img/auto_auction/winning_offer.jpg"),
     'playstyles': Path("img/auto_auction/playstyle.jpg"),
