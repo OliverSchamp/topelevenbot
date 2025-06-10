@@ -8,8 +8,9 @@ import cv2
 import numpy as np
 import pytesseract
 import re
+import pandas as pd
 from pathlib import Path
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, Dict, List
 
 from utils.logging_utils import BotLogger
 from utils.image_processing import find_and_click, find_on_screen, take_screenshot
@@ -26,7 +27,9 @@ from config.training_config import (
     MAX_RECOVERY_ATTEMPTS,
     RECOVERY_DELAY,
     TESSERACT_CMD,
-    IMAGE_PATHS
+    IMAGE_PATHS,
+    HEADERS_AND_COORDS,
+    DRILL_SCROLL_AMOUNT
 )
 from interface import TemplateMatch, ScreenRegion, TrainingProgress
 
@@ -47,6 +50,15 @@ class TrainingBot:
         self.team_name = team_name
         self.logger = BotLogger(__name__)
         self.should_restart = False
+        
+        # Load drills CSV
+        try:
+            csv_path = Path("fast_trainer_sheet/drills_per_position.csv")
+            self.drills_df = pd.read_csv(csv_path)
+            self.logger.info("Successfully loaded drills configuration")
+        except Exception as e:
+            self.logger.error("Failed to load drills configuration", e)
+            self.drills_df = None
     
     def run(self) -> None:
         """Main training bot loop"""
@@ -88,7 +100,7 @@ class TrainingBot:
                 self.should_restart = True
                 return False
             
-            time.sleep(1)
+            time.sleep(3)
             return True
             
         except Exception as e:
@@ -139,41 +151,242 @@ class TrainingBot:
         
         return False
     
-    def _drag_drill_to_slot(self) -> bool:
-        """Drag a drill to an empty slot"""
-        self.logger.info(f"Dragging drill to slot with threshold: {CONFIDENCE_THRESHOLD}")
-        
-        drill_template_match = find_on_screen(
-            str(IMAGE_PATHS['warmup_drill']), 
-            CONFIDENCE_THRESHOLD-0.2, 
-            "drill"
-        )
-        drill_x = drill_template_match.center_x
-        drill_y = drill_template_match.center_y
+    def _get_player_position(self) -> Optional[str]:
+        """Extract player position from the screen using OCR"""
+        try:
+            # Find confirm player template
+            confirm_match = find_on_screen(
+                str(IMAGE_PATHS['confirm_player']),
+                CONFIDENCE_THRESHOLD,
+                "confirm checkbox"
+            )
+            
+            # Find player template
+            player_match = find_on_screen(
+                str(IMAGE_PATHS['player_to_train']),
+                CONFIDENCE_THRESHOLD+0.1,
+                "player"
+            )
+            
+            if confirm_match.center_x is None or player_match.center_x is None:
+                self.logger.error("Could not find required templates for position extraction")
+                return None
+                
+            # Define ROI coordinates
+            x1 = confirm_match.top_left_x + confirm_match.width  # Right of confirm template
+            y1 = player_match.top_left_y  # Top of confirm template
+            x2 = player_match.top_left_x  # Left of player template
+            y2 = player_match.top_left_y + player_match.height  # Bottom of player template
+            
+            # Take screenshot and crop ROI
+            screenshot = take_screenshot()
+            roi = np.array(screenshot)[y1:y2, x1:x2]
+            #save roi image
+            cv2.imwrite("img/auto_training/roi_image_position.png", roi)
+            
+            thresh = cv2.inRange(roi, (50, 50, 50), (90, 90, 90))
+            # save thresh image
+            cv2.imwrite("img/auto_training/roi_image_position_thresh.png", thresh)
+            text = pytesseract.image_to_string(thresh).strip().upper()
+            self.logger.info(f"Extracted position text: {text}")
+            
+            return text
+            
+        except Exception as e:
+            self.logger.error("Error extracting player position", e)
+            return None
 
+    def _get_required_drills(self, position: str) -> Optional[Dict[str, int]]:
+        """Get required drills for position from loaded DataFrame"""
+        try:
+            if self.drills_df is None:
+                self.logger.error("Drills configuration not loaded")
+                return None
+                
+            # Find the row for this position
+            position_row = self.drills_df[self.drills_df['Position'] == position]
+            if position_row.empty:
+                self.logger.error(f"Position {position} not found in configuration")
+                return None
+                
+            # Get non-zero columns and their values
+            drills = {}
+            for column in self.drills_df.columns[1:]:  # Skip 'Position' column
+                value = position_row[column].iloc[0]
+                if value > 0:
+                    drills[column] = value
+                    
+            self.logger.info(f"Required drills for {position}: {drills}")
+            return drills
+            
+        except Exception as e:
+            self.logger.error("Error getting required drills", e)
+            return None
 
-        slot_template_match = find_on_screen(
-            str(IMAGE_PATHS['empty_slot']), 
-            CONFIDENCE_THRESHOLD-0.2, 
-            "empty slot"
-        )
-        slot_x = slot_template_match.center_x
-        slot_y = slot_template_match.center_y
+    def _find_drill_by_ocr(self, target_drills: List[str]) -> Tuple[List[Tuple[int, int, str]], Optional[int]]:
+        """
+        Find drill using OCR on detected regions
+        Args:
+            target_drills: List of drill names to search for
+        Returns:
+            Tuple containing:
+            - Optional tuple of (x,y,name) coordinates and name of found drill
+            - Optional x coordinate for scrolling (middle point between two drills)
+        """
+        try:
+            # Take screenshot
+            screenshot = take_screenshot()
+            gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_BGR2GRAY)
+            
+            # Apply threshold to get image with only black and white
+            _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
+            
+            # Find contours
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Store all valid drill regions
+            drill_regions = []
+            target_drill_info = []
+            
+            # First pass: collect all valid regions and find target drill
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                # Filter for rectangle-like shapes (aspect ratio and size)
+                if w > 300 and h > 100 and y < 500:
+                    drill_regions.append((x, y, w, h))
+                    
+                    # Extract ROI for OCR
+                    x1 = x + int(w*0.05)
+                    y1 = y + int(h*0.45)
+                    x2 = x1 + int(w*0.9)
+                    y2 = y1 + int(50)
+                    
+                    roi = gray[y1:y2, x1:x2]
+                    
+                    # Apply OCR
+                    text = pytesseract.image_to_string(roi).strip().upper()
+                    self.logger.info(f"OCR text: {text}")
+                    
+                    # Check if text matches any target drill
+                    for drill_name in target_drills:
+                        if drill_name.upper() in text:
+                            center_x = x1 + (x2 - x1) // 2
+                            center_y = y1 + (y2 - y1) // 2
+                            target_drill_info.append((center_x, center_y, drill_name))
+                            self.logger.info(f"Found drill: {drill_name} at ({center_x}, {center_y})")
+                            break
+            
+            # Sort regions by x coordinate
+            drill_regions.sort(key=lambda r: r[0])
+            
+            # Find suitable scroll position (middle point between two drills)
+            scroll_x = None
+            if len(drill_regions) >= 2:
+                largest_gap = 0
+                gap_center = None
+                
+                for i in range(len(drill_regions) - 1):
+                    current_drill = drill_regions[i]
+                    next_drill = drill_regions[i + 1]
+                    gap = next_drill[0] - (current_drill[0] + current_drill[2])
+                    
+                    if gap > largest_gap:
+                        largest_gap = gap
+                        gap_center = current_drill[0] + current_drill[2] + gap // 2
+                
+                scroll_x = gap_center
+            
+            return target_drill_info, scroll_x
+            
+        except Exception as e:
+            self.logger.error("Error finding drill with OCR", e)
+            return None, None
+
+    def _search_and_drag_drills_to_slot(self, remaining_drills: Dict[str, int], header_name: str) -> bool:
+        """Drag drills to empty slots based on requirements
         
-        if drill_x is not None and slot_x is not None:
-            self.logger.info(f"Dragging drill from ({drill_x}, {drill_y}) to ({slot_x}, {slot_y})")
-            pyautogui.moveTo(drill_x, drill_y, duration=0.5)
-            pyautogui.mouseDown()
-            time.sleep(0.1)
-            pyautogui.moveTo(drill_x, drill_y+(slot_y-drill_y)/2, duration=DRAG_DURATION//10)
-            pyautogui.moveTo(slot_x, slot_y, duration=DRAG_DURATION//10)
-            time.sleep(0.1)
-            pyautogui.mouseUp()
-            time.sleep(CLICK_DELAY//10)
-            return True
+        should drag left 5 times looking for required drills. If all drills are found, return true.
+
+        Returns false if there are still drills left to find
+        """
+        self.logger.info("Looking for required drills...")
         
-        return False
-    
+        for attempt in range(5):
+            # Check if empty slot exists and exit if there are no more slots to fill
+            slot_template_match = find_on_screen(
+                str(IMAGE_PATHS['empty_slot']), 
+                CONFIDENCE_THRESHOLD-0.2, 
+                "empty slot"
+            )
+            
+            if slot_template_match.confidence < CONFIDENCE_THRESHOLD-0.2:
+                self.logger.info("No more empty slots found")
+                break
+                
+            # Try to find any of the remaining drills
+            target_drills = [name for name, count in remaining_drills.items() if count > 0]
+ 
+            drill_info_list, scroll_x = self._find_drill_by_ocr(target_drills)
+            
+            for drill_info in drill_info_list:
+                drill_x, drill_y, drill_name = drill_info
+                slot_x = slot_template_match.center_x
+                slot_y = slot_template_match.center_y
+
+                if drill_name in target_drills:
+                    target_drills.remove(drill_name)
+                    for _ in range(remaining_drills[drill_name]):
+                        # take a screenshot and search for an empty slot
+                        empty_slot_match = find_on_screen(
+                            str(IMAGE_PATHS['empty_slot']), 
+                            CONFIDENCE_THRESHOLD-0.2, 
+                            "empty slot"
+                        )
+                        if empty_slot_match.confidence < CONFIDENCE_THRESHOLD-0.2:
+                            self.logger.error("No more empty slots found")
+                            return True
+                        
+                        slot_x = empty_slot_match.center_x
+                        slot_y = empty_slot_match.center_y
+
+                        self.logger.info(f"Dragging {drill_name} from ({drill_x}, {drill_y}) to ({slot_x}, {slot_y})")
+                        pyautogui.moveTo(drill_x, drill_y, duration=0.5)
+                        pyautogui.mouseDown()
+                        time.sleep(0.1)
+                        pyautogui.moveTo(drill_x, drill_y+(slot_y-drill_y)/2, duration=DRAG_DURATION//10)
+                        pyautogui.moveTo(slot_x, slot_y, duration=DRAG_DURATION//10)
+                        time.sleep(0.1)
+                        pyautogui.mouseUp()
+                        time.sleep(CLICK_DELAY//10)
+                    
+                    remaining_drills[drill_name] = 0
+                    self.logger.info(f"Remaining drills: {remaining_drills}")
+                    # if no more remaining drills, break
+                    if all(count == 0 for count in remaining_drills.values()):
+                        return True
+                
+            # If drill not found and we have a scroll position, scroll left
+            _, screen_height = pyautogui.size()
+            center_y = screen_height // 2
+            if scroll_x:
+                self.logger.info(f"Scrolling from x position: {scroll_x}")
+                pyautogui.moveTo(scroll_x, center_y, duration=0.5)
+                pyautogui.mouseDown()
+                time.sleep(0.1)
+                pyautogui.moveTo(scroll_x - DRILL_SCROLL_AMOUNT, center_y, duration=0.5)
+                pyautogui.mouseUp()
+                time.sleep(0.5)
+            else:
+                self.logger.error("No suitable scroll position found")
+                self.should_restart = True
+                return False
+                
+            # if no more attempts and still remaining drills, return false
+            if attempt == 4 and any(count > 0 for count in remaining_drills.values()):
+                return False
+        
+        return True
+
     def _setup_training(self) -> bool:
         """Setup training session with selected player and drills"""
         try:
@@ -189,11 +402,27 @@ class TrainingBot:
                 self.should_restart = True
                 return False
             
+            # Get player position
+            position = self._get_player_position()
+            if not position:
+                self.logger.error("Could not determine player position")
+                self.should_restart = True
+                return False
+            
+            # Get required drills for position
+            required_drills = self._get_required_drills(position)
+            if not required_drills:
+                self.logger.error("Could not determine required drills")
+                self.should_restart = True
+                return False
+            
             # Click confirm
             if not find_and_click(str(IMAGE_PATHS['confirm']), description="confirm button"):
                 self.logger.error("Could not find confirm button")
                 self.should_restart = True
                 return False
+            
+            time.sleep(1)
             
             # Click drills
             if not find_and_click(str(IMAGE_PATHS['drills']), description="drills button"):
@@ -201,26 +430,25 @@ class TrainingBot:
                 self.should_restart = True
                 return False
             
-            # Click physical and mental
-            if not find_and_click(str(IMAGE_PATHS['physical_n_mental']), description="physical and mental section"):
-                self.logger.error("Could not find physical and mental section")
+            time.sleep(1)
+            
+            # Click physical and mental using hardcoded coordinates
+            all_drills_found = False
+            for header_name, coords in HEADERS_AND_COORDS.items():
+                pyautogui.moveTo(coords[0], coords[1], duration=0.5)
+                pyautogui.click()
+                time.sleep(CLICK_DELAY)
+            
+                # Fill empty slots with required drills
+                all_drills_found = self._search_and_drag_drills_to_slot(required_drills, header_name)
+                
+                if all_drills_found:
+                    break
+            
+            if not all_drills_found:
+                self.logger.error("Failed to drag all required drills")
                 self.should_restart = True
                 return False
-            
-            # Fill empty slots with warmup drills
-            while True:
-                empty_slot_template_match = find_on_screen(
-                    str(IMAGE_PATHS['empty_slot']), 
-                    CONFIDENCE_THRESHOLD-0.2, 
-                    "empty slot"
-                )
-                if empty_slot_template_match.confidence < CONFIDENCE_THRESHOLD-0.2:
-                    break
-                
-                if not self._drag_drill_to_slot():
-                    self.logger.error("Failed to drag drill to empty slot")
-                    self.should_restart = True
-                    return False
             
             # Click confirm
             if not find_and_click(str(IMAGE_PATHS['confirm']), description="final confirm button"):
@@ -428,8 +656,8 @@ class TrainingBot:
                         return False
 
                 # Check progress and greens
-                self.logger.info("Waiting 2 seconds before checking progress...")
-                time.sleep(2)
+                self.logger.info("Waiting 4 seconds before checking progress...")
+                time.sleep(4)
                 screenshot = take_screenshot()
                 
                 # Get progress and greens budget
@@ -444,10 +672,11 @@ class TrainingBot:
 
                 if progress is None:
                     self.logger.error("Could not detect progress value")
-                    if not self._attempt_recovery(lambda: self._get_progress_value(take_screenshot()) is not None):
-                        self.logger.info("Recovery failed")
-                        self.should_restart = True
-                        return False
+                    # TODO: Recovery is bugged
+                    # if not self._attempt_recovery(lambda: self._get_progress_value(take_screenshot()) is not None):
+                    #     self.logger.info("Recovery failed")
+                    self.should_restart = True
+                    return False
 
                 self.logger.info(f"Current training progress: {training_progress.progress}%")
 

@@ -115,7 +115,10 @@ class AdWatchBot:
     def _watch_ad_loop(self) -> bool:
         """Execute the main ad watching loop"""
         try:
+
             while True:
+                find_and_click(str(IMAGE_PATHS['greens_ads_button']), description="greens ads button")
+
                 # Check for X button
                 x_region = self._check_for_x_button()
                 
@@ -127,7 +130,7 @@ class AdWatchBot:
                         return False
                     
                     # Wait before next check
-                    time.sleep(AD_CHECK_INTERVAL)
+                    time.sleep(1)
                     continue
                 
                 # Check if we've gone too long without seeing an X button

@@ -26,6 +26,9 @@ RECOVERY_DELAY = 5  # Delay between recovery attempts
 # OCR Configuration
 TESSERACT_CMD = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+HEADERS_AND_COORDS = {'ATTACK': [250, 160], 'DEFENSE': [610, 160], 'POSSESSION': [970, 160], 'PHYSICAL AND MENTAL': [1330, 160]}
+DRILL_SCROLL_AMOUNT = 500
+
 # Image Paths
 IMAGE_PATHS = {
     'ldplayer': Path("img/general/ldplayer_icon.jpg"),
@@ -33,13 +36,11 @@ IMAGE_PATHS = {
     'promo_x': Path("img/general/promo_x_1.jpg"),
     'training': Path("img/auto_training/training_section.jpg"),
     'players': Path("img/auto_training/players.jpg"),
-    'player_to_train': Path("img/auto_training/players/d_soto.jpg"),
+    'player_to_train': Path("img/auto_training/players/m_vnyvel.jpg"),
     'confirm_player': Path("img/auto_training/confirm_player.jpg"),
     'confirm': Path("img/auto_training/confirm.jpg"),
     'drills': Path("img/auto_training/drills.jpg"),
-    'physical_n_mental': Path("img/auto_training/possession.jpg"),
     'empty_slot': Path("img/auto_training/empty_train_slot.jpg"),
-    'warmup_drill': Path("img/auto_training/rapidsideswitch_drill.jpg"),
     'start_training': Path("img/auto_training/start_training.jpg"),
     'start_training_session': Path("img/auto_training/start_training_session.jpg"),
     'repeat_training': Path("img/auto_training/repeat_training.jpg"),
