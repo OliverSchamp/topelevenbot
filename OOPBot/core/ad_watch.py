@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from utils.logging_utils import BotLogger
-from utils.image_processing import find_and_click, find_on_screen, take_screenshot
+from utils.image_processing import find_and_click, find_on_screen, take_screenshot, crop_black_bars
 from config.ad_config import (
     CLICK_DELAY,
     AD_CHECK_INTERVAL,
@@ -20,6 +20,14 @@ from config.ad_config import (
     MAX_TIME_WITHOUT_X
 )
 from interface import TemplateMatch, ScreenRegion
+from utils.x_button_ai import detect_x_buttons
+
+training_data_dir = Path("img/x_examples/training_data")
+
+image_id = 0
+for image in training_data_dir.glob("*.jpg"):
+    image_id = max(image_id, int(image.stem))
+
 
 class AdWatchResult:
     """Class to represent ad watching result"""
@@ -60,40 +68,7 @@ class AdWatchBot:
             self.should_restart = True
             return False
     
-    def _check_for_x_button(self) -> Optional[ScreenRegion]:
-        """Check for any X button templates in the top right quarter of the screen"""
-        # Get screen dimensions
-        screen_width, screen_height = pyautogui.size()
-        
-        # Define top right quarter region
-        search_region = ScreenRegion(
-            x1=screen_width//2,
-            y1=0,
-            x2=screen_width,
-            y2=screen_height//2
-        )
-        
-        # Check each X button template
-        x_button_path = Path(X_BUTTONS_DIR)
-        for template in x_button_path.glob("*.jpg"):
-            match = find_on_screen(
-                str(template),
-                threshold=CONFIDENCE_THRESHOLD-0.1,
-                description=f"X button ({template.name})",
-                search_region=search_region
-            )
-            
-            if match.center_x is not None and match.center_y is not None:
-                self.logger.info(f"Found X button at ({match.center_x}, {match.center_y})")
-                self.last_x_time = time.time()
-                return ScreenRegion(
-                    x1=match.center_x - 5,
-                    y1=match.center_y - 5,
-                    x2=match.center_x + 5,
-                    y2=match.center_y + 5
-                )
-        
-        return None
+
     
     def _click_x_button(self, x_region: ScreenRegion) -> bool:
         """Click the X button in the specified region"""
@@ -112,37 +87,123 @@ class AdWatchBot:
             self.logger.error("Error clicking X button", e)
             return False
     
+    def _dynamic_x_detection(self, screenshot, prev_screenshot, epsilon=5):
+        """
+        If the screenshot is similar to the previous and no X is detected, rerun detection with low threshold and click the highest-confidence detection if any.
+        Returns True if a click was made, False otherwise.
+        """
+        if prev_screenshot is not None and screenshot.shape == prev_screenshot.shape:
+            diff = np.mean(np.abs(screenshot.astype(np.float32) - prev_screenshot.astype(np.float32)))
+            if diff < epsilon:
+                # 1. Run model on original screenshot
+                all_regions = detect_x_buttons(screenshot, conf_threshold=0.05)
+                if len(all_regions) == 1:
+                    region = all_regions[0]
+                    self.logger.info(f"[Dynamic] Clicking X with highest confidence at ({(region.x1+region.x2)//2}, {(region.y1+region.y2)//2}) [original image]")
+                    center_x = (region.x1 + region.x2) // 2
+                    center_y = (region.y1 + region.y2) // 2
+                    pyautogui.moveTo(center_x, center_y, duration=0.5)
+                    pyautogui.click()
+                    time.sleep(1)
+                    return True
+                # 2. If not, try with cropped image
+                screenshot_cropped, (offset_x, offset_y) = crop_black_bars(screenshot)
+                all_regions = detect_x_buttons(screenshot_cropped, conf_threshold=0.05)
+                if len(all_regions) == 1:
+                    region = all_regions[0]
+                    # Translate region coordinates back to original image
+                    region = ScreenRegion(
+                        x1=region.x1 + offset_x,
+                        x2=region.x2 + offset_x,
+                        y1=region.y1 + offset_y,
+                        y2=region.y2 + offset_y
+                    )
+                    self.logger.info(f"[Dynamic] Clicking X with highest confidence at ({(region.x1+region.x2)//2}, {(region.y1+region.y2)//2}) [cropped image]")
+                    center_x = (region.x1 + region.x2) // 2
+                    center_y = (region.y1 + region.y2) // 2
+                    pyautogui.moveTo(center_x, center_y, duration=0.5)
+                    pyautogui.click()
+                    time.sleep(1)
+                    return True
+        return False
+
     def _watch_ad_loop(self) -> bool:
         """Execute the main ad watching loop"""
         try:
-
+            saw_object_last_time = False
+            prev_screenshot = None
+            epsilon = 5  # Similarity threshold for screenshots
             while True:
-                find_and_click(str(IMAGE_PATHS['greens_ads_button']), description="greens ads button")
+                time.sleep(1)  # 1. Wait 1 second before each loop
 
-                # Check for X button
-                x_region = self._check_for_x_button()
-                
-                if x_region is not None:
-                    self.logger.info("Found X button, attempting to click it")
-                    if not self._click_x_button(x_region):
-                        self.logger.error("Failed to click X button")
-                        self.should_restart = True
-                        return False
-                    
-                    # Wait before next check
+                #find and click on the greens_ads_button template
+                find_and_click(IMAGE_PATHS["greens_ads_button"])
+
+                # 2. Template match for ldplayer_suggest - which is the suggestion to download the ad game in the ld store
+                match = find_on_screen(
+                    "img/auto_ads/ldplayer_suggest.JPG",
+                    threshold=0.8,  # You may adjust this threshold
+                    description="ldplayer_suggest"
+                )
+                if match.top_left_x is not None and match.top_left_y is not None:
+                    # Click at (top_left_x + 320, top_left_y + 210)
+                    click_x = match.top_left_x + 320
+                    click_y = match.top_left_y + 210
+                    self.logger.info(f"Clicking ldplayer_suggest at ({click_x}, {click_y})")
+                    pyautogui.moveTo(click_x, click_y, duration=0.5)
+                    pyautogui.click()
                     time.sleep(1)
-                    continue
-                
+                    continue  # After clicking, continue to next loop iteration
+
+                # Take screenshot for X detection
+                screenshot = take_screenshot()
+                # 1. Run model on original screenshot
+                x_regions = detect_x_buttons(screenshot)
+                if len(x_regions) != 1:
+                    # 2. If not, try with cropped image
+                    screenshot_cropped, (offset_x, offset_y) = crop_black_bars(screenshot)
+                    x_regions = detect_x_buttons(screenshot_cropped)
+                    # Translate all region coordinates back to original image
+                    x_regions = [ScreenRegion(
+                        x1=r.x1 + offset_x,
+                        x2=r.x2 + offset_x,
+                        y1=r.y1 + offset_y,
+                        y2=r.y2 + offset_y
+                    ) for r in x_regions]
+
+                # 4. If more than one detection, treat as no detection
+                if len(x_regions) != 1:
+                    # Dynamic confidence thresholding if screenshot is similar to previous
+                    time_since_last_x = time.time() - self.last_x_time
+                    if self._dynamic_x_detection(screenshot, prev_screenshot, epsilon) and time_since_last_x > 60:
+                        saw_object_last_time = False
+                        prev_screenshot = screenshot
+                        self.last_x_time = time.time()
+                        continue
+                    saw_object_last_time = False
+                else:
+                    # 3. Only click if saw object last time too
+                    if saw_object_last_time:
+                        self.logger.info("Clicking detected X button (AI model)")
+                        center_x = (x_regions[0].x1 + x_regions[0].x2) // 2
+                        center_y = (x_regions[0].y1 + x_regions[0].y2) // 2
+                        pyautogui.moveTo(center_x, center_y, duration=0.5)
+                        pyautogui.click()
+                        self.last_x_time = time.time()
+                        continue
+                    saw_object_last_time = True
+
+                prev_screenshot = screenshot
+
                 # Check if we've gone too long without seeing an X button
                 time_since_last_x = time.time() - self.last_x_time
                 if time_since_last_x > MAX_TIME_WITHOUT_X:
                     self.logger.warning(f"No X button found for {time_since_last_x:.1f} seconds, restarting")
                     self.should_restart = True
                     return False
-                
+
                 # Wait before next check
                 time.sleep(AD_CHECK_INTERVAL)
-                
         except Exception as e:
             self.logger.error("Error in ad watching loop", e)
             self.should_restart = True

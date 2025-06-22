@@ -43,7 +43,10 @@ def perform_ocr(image_path):
 
     # Preprocess nthe image
     processed_image = preprocess_image(image)
-    processed_image = processed_image[:,15:]
+    # crop preprocessed image to only be the middle 50% of the width and height
+    height, width = processed_image.shape
+    processed_image = processed_image[height//4:3*height//4, width//4:3*width//4]
+    # processed_image = processed_image[:,15:]
 
     cv2.imshow("Preprocessed Image", processed_image)
     cv2.waitKey(0)
@@ -57,7 +60,7 @@ def perform_ocr(image_path):
 
 def main():
     # Path to the OCR test images
-    ocr_test_dir = Path("img/ocr_test")
+    ocr_test_dir = Path("img/auto_training")
     
     if not ocr_test_dir.exists():
         print(f"Error: Directory {ocr_test_dir} does not exist")

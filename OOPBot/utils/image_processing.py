@@ -14,6 +14,47 @@ from interface import TemplateMatch, ScreenRegion
 
 logger = logging.getLogger(__name__)
 
+def crop_black_bars(image, black_thresh=10, min_bar_thickness_ratio=0.05):
+    """
+    Detect and crop large black bars (letterbox) from the image.
+    Args:
+        image: Input BGR image (numpy array)
+        black_thresh: Pixel value threshold to consider as black (0-255)
+        min_bar_thickness_ratio: Minimum thickness ratio (w.r.t. image size) to consider as a bar
+    Returns:
+        cropped_image: Cropped image (if bars found), else original image
+        offsets: (left, top) pixel offsets of the crop
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, black_thresh, 255, cv2.THRESH_BINARY_INV)
+    h, w = mask.shape
+    col_sum = np.sum(mask, axis=0) / 255
+    row_sum = np.sum(mask, axis=1) / 255
+    col_black_thresh = h * 0.98
+    row_black_thresh = w * 0.98
+    left = 0
+    while left < w and col_sum[left] > col_black_thresh:
+        left += 1
+    right = w - 1
+    while right >= 0 and col_sum[right] > col_black_thresh:
+        right -= 1
+    top = 0
+    while top < h and row_sum[top] > row_black_thresh:
+        top += 1
+    bottom = h - 1
+    while bottom >= 0 and row_sum[bottom] > row_black_thresh:
+        bottom -= 1
+    min_bar_w = int(w * min_bar_thickness_ratio)
+    min_bar_h = int(h * min_bar_thickness_ratio)
+    crop_left = left if left > min_bar_w else 0
+    crop_right = right if (w - 1 - right) > min_bar_w else w - 1
+    crop_top = top if top > min_bar_h else 0
+    crop_bottom = bottom if (h - 1 - bottom) > min_bar_h else h - 1
+    if crop_left > 0 or crop_right < w - 1 or crop_top > 0 or crop_bottom < h - 1:
+        cropped = image[crop_top:crop_bottom+1, crop_left:crop_right+1]
+        return cropped, (crop_left, crop_top)
+    return image, (0, 0)
+
 def take_screenshot() -> np.ndarray:
     """Take a screenshot of the entire screen"""
     screenshot = pyautogui.screenshot()

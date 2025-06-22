@@ -16,7 +16,7 @@ PROMO_CONFIDENCE_THRESHOLD = 0.7  # Lower threshold for promo button
 
 # Progress Monitoring
 PROGRESS_ROI = [1441, 571, 1660, 626]  # Region of interest for progress monitoring
-GREENS_BUDGET_ROI = [1156, 15, 1249, 64]  # Region of interest for greens budget monitoring. TODO: check how many greens are left before recovering player condition
+GREENS_BUDGET_ROI = [1171, 20, 1234, 59]  # Region of interest for greens budget monitoring. TODO: check how many greens are left before recovering player condition
 MIN_CONDITION_THRESHOLD = 30  # Minimum condition percentage before restoration
 
 # Recovery Settings
@@ -36,7 +36,7 @@ IMAGE_PATHS = {
     'promo_x': Path("img/general/promo_x_1.jpg"),
     'training': Path("img/auto_training/training_section.jpg"),
     'players': Path("img/auto_training/players.jpg"),
-    'player_to_train': Path("img/auto_training/players/m_vnyvel.jpg"),
+    'player_to_train': Path("img/auto_training/players/a_ferreira.jpg"),
     'confirm_player': Path("img/auto_training/confirm_player.jpg"),
     'confirm': Path("img/auto_training/confirm.jpg"),
     'drills': Path("img/auto_training/drills.jpg"),

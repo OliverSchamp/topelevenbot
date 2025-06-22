@@ -252,17 +252,39 @@ class AuctionBot:
             self.logger.error("Error reordering players", e)
             return False
         
-    def _handle_new_auction(self) -> Optional[int]:
+    def _handle_new_auction(self, templates: Tuple[TemplateMatch, TemplateMatch, TemplateMatch]) -> Optional[int]:
         """Handle waiting for new auction and return new y position"""
+        name_template_match, age_template_match, _ = templates
         try:
             screenshot = take_screenshot()
             success = self._wait_for_new_auctions(screenshot)  # removed current_y parameter
             if success:
+                pyautogui.click(name_template_match.center_x, name_template_match.center_y)
+                pyautogui.click(age_template_match.center_x, age_template_match.center_y)
                 return self._get_initial_y_position()
             return None
         except Exception as e:
             self.logger.error("Error handling new auction", e)
             return None
+        
+    def get_auction_cols(self):
+        # Get column coordinates
+        name_template_match = find_on_screen(
+            str(IMAGE_PATHS['name']),
+            description="name column"
+        )
+
+        age_template_match = find_on_screen(
+            str(IMAGE_PATHS['age']),
+            description="age column"
+        )
+
+        value_template_match = find_on_screen(
+            str(IMAGE_PATHS['value']),
+            description="value column"
+        )
+        return name_template_match, age_template_match, value_template_match
+
     
     def _process_auction_page(self, current_y: int, df_fast_trainers: pd.DataFrame) -> tuple[PlayerAttributes, bool, Optional[int]]:
         """Process a single player on the auction page
@@ -277,15 +299,17 @@ class AuctionBot:
         
         try:
             screenshot = take_screenshot()
+
+            templates = self.get_auction_cols()
             
             # Check if we've reached bottom of page
             if current_y > pyautogui.size()[1] - ROW_HEIGHT:
                 self.logger.info(f"Reached bottom of page at Y: {current_y}, waiting for new auctions")
-                new_y = self._handle_new_auction()
+                new_y = self._handle_new_auction(templates)
                 return player_attrs, True, new_y
             
             # Get player details
-            player_details = self._get_player_details(screenshot, current_y)
+            player_details = self._get_player_details(screenshot, current_y, templates)
             if player_details is None:
                 player_attrs.reason_rejected = "Failed to get player details"
                 return player_attrs, False, None
@@ -313,7 +337,7 @@ class AuctionBot:
                 self.logger.info(f"Player too old: {age}")
                 player_attrs.reason_rejected = f"Player too old: {age}"
                 exit_bidding = self._exit_bidding(name)
-                new_y = self._handle_new_auction()
+                new_y = self._handle_new_auction(templates)
                 return player_attrs, exit_bidding, new_y
             
             # Check quality range
@@ -408,29 +432,15 @@ class AuctionBot:
             self.logger.error("Error waiting for new auctions", e)
             return False
     
-    def _get_player_details(self, screenshot: np.ndarray, current_y: int) -> Optional[Tuple[str, int, float, int, List[Optional[str]], Optional[str]]]:
+    def _get_player_details(self, screenshot: np.ndarray, current_y: int, templates: Tuple[TemplateMatch, TemplateMatch, TemplateMatch]) -> Optional[Tuple[str, int, float, int, List[Optional[str]], Optional[str]]]:
         """Get all details for a player"""
         try:
-            # Get column coordinates
-            name_template_match = find_on_screen(
-                str(IMAGE_PATHS['name']),
-                description="name column"
-            )
+            name_template_match, age_template_match, value_template_match = templates
             name_x = name_template_match.top_left_x
             name_center_x = name_template_match.center_x
             name_w = name_template_match.width
-
-            age_template_match = find_on_screen(
-                str(IMAGE_PATHS['age']),
-                description="age column"
-            )
             age_x = age_template_match.top_left_x
             age_w = age_template_match.width
-
-            value_template_match = find_on_screen(
-                str(IMAGE_PATHS['value']),
-                description="value column"
-            )
             value_x = value_template_match.top_left_x
             value_w = value_template_match.width
             
@@ -978,7 +988,7 @@ class AuctionBot:
             self.logger.info(f"Available money text: {text}")
             amount = extract_numeric_value(text, money=True)
             if amount is not None:
-                self.logger.info(f"Available money: {amount}M")
+                self.logger.info(f"Available money: {amount}")
                 return amount
             
             self.logger.error(f"Could not extract numeric value from text: {text}")
@@ -1011,7 +1021,7 @@ class AuctionBot:
             # Next offer region is 60 pixels to the right
             next_offer_region = screenshot[
                 next_offer_y-20:next_offer_y+next_offer_h+20,
-                next_offer_x+next_offer_w:next_offer_x+next_offer_w+120
+                next_offer_x+next_offer_w:next_offer_x+next_offer_w+150
             ]
             
             # Preprocess the image
@@ -1019,7 +1029,9 @@ class AuctionBot:
             next_offer_text = extract_text_from_region(next_offer_region, preprocess=False)
             
             # Extract numeric value and convert K to M if needed
-            amount = extract_numeric_value(next_offer_text, money=True)
+            self.logger.info(f"Next offer money text before extraction: {next_offer_text}")
+            amount = extract_numeric_value(next_offer_text, money=True) # TODO: issue here with recognising M. have made next offer region longer
+            self.logger.info(f"Next offer money text: {next_offer_text}")
             if amount is not None:
                 self.logger.info(f"Next offer money amount: {amount}M")
                 return amount
