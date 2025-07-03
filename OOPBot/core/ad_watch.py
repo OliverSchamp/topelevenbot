@@ -141,7 +141,7 @@ class AdWatchBot:
 
                 # 2. Template match for ldplayer_suggest - which is the suggestion to download the ad game in the ld store
                 match = find_on_screen(
-                    "img/auto_ads/ldplayer_suggest.JPG",
+                    IMAGE_PATHS['ldplayer_suggest'],
                     threshold=0.8,  # You may adjust this threshold
                     description="ldplayer_suggest"
                 )
@@ -155,6 +155,22 @@ class AdWatchBot:
                     time.sleep(1)
                     continue  # After clicking, continue to next loop iteration
 
+                # 2.5 Template match for exit ad suggest
+                match = find_on_screen(
+                    IMAGE_PATHS['ads_exit_suggest'],
+                    threshold=0.8,  # You may adjust this threshold
+                    description="ads_exit_suggest"
+                )
+                if match.top_left_x is not None and match.top_left_y is not None:
+                    # Click at (top_left_x + 320, top_left_y + 210)
+                    click_x = match.top_left_x + 500
+                    click_y = match.top_left_y + 360
+                    self.logger.info(f"Clicking ads_exit_suggest at ({click_x}, {click_y})")
+                    pyautogui.moveTo(click_x, click_y, duration=0.5)
+                    pyautogui.click()
+                    time.sleep(1)
+                    continue  # After clicking, continue to next loop iteration
+
                 # Take screenshot for X detection
                 screenshot = take_screenshot()
                 # 1. Run model on original screenshot
@@ -162,7 +178,10 @@ class AdWatchBot:
                 if len(x_regions) != 1:
                     # 2. If not, try with cropped image
                     screenshot_cropped, (offset_x, offset_y) = crop_black_bars(screenshot)
-                    x_regions = detect_x_buttons(screenshot_cropped)
+                    try:
+                        x_regions = detect_x_buttons(screenshot_cropped)
+                    except ZeroDivisionError:
+                        continue
                     # Translate all region coordinates back to original image
                     x_regions = [ScreenRegion(
                         x1=r.x1 + offset_x,

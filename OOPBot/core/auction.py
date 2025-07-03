@@ -47,7 +47,8 @@ from config.auction_config import (
     TOTAL_MONEY_AVAILABLE_REGION,
     MAXIMUM_MONEY_BUDGET,
     AUCTION_WON_PIXEL,
-    AUCTION_WON_COLOR
+    AUCTION_WON_COLOR,
+    EXPECTED_VALUE_MULTIPLIER
 )
 from interface import TemplateMatch, ScreenRegion, PlayerDetails, PlayerAttributes, BidDetails
 
@@ -356,7 +357,7 @@ class AuctionBot:
             age_col = f"{age}yo"
             try:
                 quality_row = df_fast_trainers[df_fast_trainers['%'] == str(quality)+'%']
-                expected_value = float(quality_row[age_col].iloc[0])
+                expected_value = float(quality_row[age_col].iloc[0]) * EXPECTED_VALUE_MULTIPLIER
                 player_attrs.expected_value = expected_value
             except KeyError:
                 player_attrs.reason_rejected = f"Age {age} not in dataset"

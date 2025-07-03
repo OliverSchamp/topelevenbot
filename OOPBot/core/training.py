@@ -36,6 +36,9 @@ from interface import TemplateMatch, ScreenRegion, TrainingProgress
 # Set tesseract path
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
+# TODO: still bad behaviour when a player improves a star. does restart game though....
+# TODO: check condition from the start of training also
+
 class TrainingResult:
     """Class to represent training result"""
     SUCCESS = 'success'
@@ -116,7 +119,7 @@ class TrainingBot:
             # Look for the player
             match = find_on_screen(
                 str(IMAGE_PATHS['player_to_train']), 
-                CONFIDENCE_THRESHOLD+0.1, 
+                CONFIDENCE_THRESHOLD-0.1, 
                 "player"
             )
             self.logger.info(f"Player search attempt {attempt + 1}, confidence: {match.confidence:.2%}")

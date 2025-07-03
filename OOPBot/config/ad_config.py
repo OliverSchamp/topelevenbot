@@ -17,6 +17,8 @@ IMAGE_PATHS = {
     'ldplayer_open': Path("img/general/ldplayer_open.jpg"),
     'green_hud': Path("img/auto_ads/greens_hud.jpg"),
     'greens_ads_button': Path("img/auto_ads/greens_ads_button.jpg"),
+    'ldplayer_suggest': Path("img/auto_ads/ldplayer_suggest.jpg"),
+    'ads_exit_suggest': Path("img/auto_ads/ads_exit_suggest.jpg")
 }
 
 # X button templates directory

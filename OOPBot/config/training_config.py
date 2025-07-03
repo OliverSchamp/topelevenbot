@@ -36,7 +36,7 @@ IMAGE_PATHS = {
     'promo_x': Path("img/general/promo_x_1.jpg"),
     'training': Path("img/auto_training/training_section.jpg"),
     'players': Path("img/auto_training/players.jpg"),
-    'player_to_train': Path("img/auto_training/players/a_ferreira.jpg"),
+    'player_to_train': Path("img/auto_training/players/s_leca.jpg"),
     'confirm_player': Path("img/auto_training/confirm_player.jpg"),
     'confirm': Path("img/auto_training/confirm.jpg"),
     'drills': Path("img/auto_training/drills.jpg"),

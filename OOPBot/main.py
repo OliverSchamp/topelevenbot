@@ -23,7 +23,7 @@ def main():
     Path("logs").mkdir(exist_ok=True)
     
     # Initialize bot with team name
-    bot = TopElevenBot("FC 69")  # Replace with your team name
+    bot = TopElevenBot("Oliver")  # Replace with your team name
     
     # Get bot mode from user input
     print("\nSelect bot mode:")

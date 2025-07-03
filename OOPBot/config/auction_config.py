@@ -43,8 +43,8 @@ PLAYSTYLE_TEXT_REGION = {
 CONFIDENCE_THRESHOLD = 0.8
 
 # Bidding
-MAXIMUM_TOKEN_BUDGET = 5
-MAXIMUM_MONEY_BUDGET = 3 #M
+MAXIMUM_TOKEN_BUDGET = 20
+MAXIMUM_MONEY_BUDGET = 5 #M
 
 # ROIs for the tokens and money that I have left
 TOTAL_TOKENS_AVAILABLE_REGION = {
@@ -81,11 +81,12 @@ VALID_POSITIONS = [
 ]
 
 # Player filtering settings
-DESIRED_POSITIONS = ["DC", "DMC", "DL", "DR"]  # Only bid on players in these positions
+DESIRED_POSITIONS = ["DC", "DMC", "DR"]  # Only bid on players in these positions
 MIN_QUALITY = 0  # Minimum quality percentage to consider
 MAX_QUALITY = 100  # Maximum quality percentage to consider
 MIN_AGE = 18  # Minimum age to consider
-MAX_AGE = 20  # Maximum age to consider
+MAX_AGE = 19  # Maximum age to consider
+EXPECTED_VALUE_MULTIPLIER = 1.0
 
 # File Paths
 IMAGE_PATHS = {

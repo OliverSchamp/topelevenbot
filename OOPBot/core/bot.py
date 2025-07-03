@@ -14,13 +14,16 @@ from utils.image_processing import find_and_click, find_on_screen
 from config.auction_config import IMAGE_PATHS as AUCTION_IMAGE_PATHS
 from config.training_config import IMAGE_PATHS as TRAINING_IMAGE_PATHS
 from config.ad_config import IMAGE_PATHS as AD_IMAGE_PATHS
+from config.general_config import IMAGE_PATHS as GENERAL_IMAGE_PATHS
+from config.general_config import MYSTERY_CHOICE_COORDS
 from interface import TemplateMatch, ScreenRegion, BotStatus
 
 # Combine all image paths
 IMAGE_PATHS = {
     **AUCTION_IMAGE_PATHS,
     **TRAINING_IMAGE_PATHS,
-    **AD_IMAGE_PATHS
+    **AD_IMAGE_PATHS,
+    **GENERAL_IMAGE_PATHS
 }
 
 class BotMode(Enum):
@@ -110,6 +113,9 @@ class TopElevenBot:
             if find_and_click(str("img/general/top_eleven.jpg"), description="restart top eleven"):
                 time.sleep(20)  # Wait for game to load
 
+            # check for daily rewards popup and select a daily reward
+            self._collect_daily_reward()
+
             # click at [0, 500]
             pyautogui.moveTo(0, 500, duration=0.5)
             pyautogui.click()
@@ -134,3 +140,31 @@ class TopElevenBot:
             team_name=self.team_name,
             is_running=self.current_mode is not None
         ) 
+    
+    def _collect_daily_reward(self):
+        
+        time.sleep(2)
+        
+        match = find_on_screen(IMAGE_PATHS["daily_rewards"], description="Daily Rewards Text")
+
+        if match.top_left_x is None:
+            return
+
+        if not find_and_click(IMAGE_PATHS["mystery_button"], description="Mystery button"):
+            return
+        
+        time.sleep(1)
+
+        # if not find_and_click(IMAGE_PATHS["mystery_choice"]):
+        #     return
+        pyautogui.moveTo(MYSTERY_CHOICE_COORDS['x'], MYSTERY_CHOICE_COORDS['y'], duration=0.5)
+        pyautogui.click()
+        
+        time.sleep(3)
+        
+        if not find_and_click(IMAGE_PATHS["claim_mystery_choice"], description="Claim mystery choice"):
+            return
+        
+        time.sleep(5)
+
+        return
