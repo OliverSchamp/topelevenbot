@@ -31,6 +31,7 @@ class BotMode(Enum):
     AUCTION = "auction"
     TRAINING = "training"
     AD_WATCH = "ad_watch"
+    PENALTY_CLASH = "penalty_clash"
 
 class TopElevenBot:
     """Main bot class for Top Eleven"""
@@ -77,6 +78,10 @@ class TopElevenBot:
                 from core.ad_watch import AdWatchBot
                 ad_bot = AdWatchBot(self.team_name)
                 ad_bot.run()
+            elif mode == BotMode.PENALTY_CLASH:
+                from core.penalty_clash import PenaltyClashBot
+                penalty_clash_bot = PenaltyClashBot(self.team_name)
+                penalty_clash_bot.run()
             
         except Exception as e:
             self.logger.error("Error in bot execution", e)

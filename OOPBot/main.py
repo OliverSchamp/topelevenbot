@@ -30,10 +30,11 @@ def main():
     print("1. Auction")
     print("2. Training")
     print("3. Ad Watch")
+    print("4. Penalty Clash")
     
     while True:
         try:
-            mode = int(input("\nEnter mode number (1-3): "))
+            mode = int(input("\nEnter mode number (1-4): "))
             if mode == 1:
                 selected_mode = BotMode.AUCTION
                 break
@@ -43,10 +44,13 @@ def main():
             elif mode == 3:
                 selected_mode = BotMode.AD_WATCH
                 break
+            elif mode == 4:
+                selected_mode = BotMode.PENALTY_CLASH
+                break
             else:
                 print("Invalid mode number. Please try again.")
         except ValueError:
-            print("Invalid input. Please enter a number between 1 and 3.")
+            print("Invalid input. Please enter a number between 1 and 4.")
     
     while True:
         try:
