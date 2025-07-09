@@ -18,10 +18,10 @@ def setup_logging(log_dir: str = "logs") -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = Path(log_dir) / f"bot_{timestamp}.log"
     
-    # Configure logging
+    # Configure logging with milliseconds in the format
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+        format='%(asctime)s.%(msecs)03d - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=[
             logging.FileHandler(log_file),

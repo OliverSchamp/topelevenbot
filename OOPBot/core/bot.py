@@ -128,7 +128,7 @@ class TopElevenBot:
             
             # Find and click home menu if bot is not in ad watch mode
             if self.current_mode != BotMode.AD_WATCH:
-                if not find_and_click(str(IMAGE_PATHS['home_menu']), description="home menu"):
+                if not find_and_click(str(IMAGE_PATHS['home_menu']), description="home menu", threshold=0.75):
                     self.logger.error("Could not find home menu")
                     return False
             
