@@ -95,64 +95,58 @@ class PenaltyClashBot:
 
     def _taking_shot_phase(self):
         self.logger.info("Waiting for unstoppable pixel detection...")
-        start = time.time()
         count = 0
         while True:
             start_screenshot = time.perf_counter()
             screenshot = self._take_screenshot(UNSTOPPABLE_CROP)
             arr = np.array(screenshot)
             cropped = arr  # Already cropped by mss
-            self.logger.info(f"SC {time.perf_counter() - start_screenshot}")
-            start_search = time.perf_counter()
-            if self._find_matching_pixel(cropped, UNSTOPPABLE_LOW, UNSTOPPABLE_HIGH):
+
+            if self._find_matching_pixel_fast(cropped, UNSTOPPABLE_LOW, UNSTOPPABLE_HIGH):
                 break
-            self.logger.info(f"SE {time.perf_counter() - start_search}")
-            # time.sleep(0.01)
+ 
             count += 1
 
-        self.logger.info(f"{(time.time() - start)/(count+1)}s per loop")
-        # pyautogui.mouseDown()
-        # Use win32api to press the left mouse button down instead of pyautogui
+        self.logger.info(f"{time.perf_counter()-start_screenshot}s reaction time")
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         self.logger.info("Unstoppable pixel detected. Proceeding to click and hold.")
         try:
             self.logger.info("Waiting for triangle detection in white pixel range...")
-            start = time.time()
             count = 0
             while True:
+                start_screenshot = time.perf_counter()
                 screenshot = self._take_screenshot(GREEN_CROP)
                 arr = np.array(screenshot)
                 green = arr  # Already cropped by mss
-                green_channel = green[:, :, 1]
-                red_channel = green[:, :, 0]
-                blue_channel = green[:, :, 2]
+                
+                # Vectorized green pixel detection - much faster than separate channel operations
                 green_mask = (
-                    (green_channel > GREEN_CHANNEL_THRESHOLD) &
-                    (blue_channel < BLUE_CHANNEL_MAX) &
-                    (red_channel < RED_CHANNEL_MAX)
+                    (green[:, :, 1] > GREEN_CHANNEL_THRESHOLD) &
+                    (green[:, :, 2] < BLUE_CHANNEL_MAX) &
+                    (green[:, :, 0] < RED_CHANNEL_MAX)
                 )
-                white_img = np.zeros_like(green_channel, dtype=np.uint8)
-                white_img[green_mask] = 255
-                white_pixels = np.column_stack(np.where(white_img == 255))
-                if white_pixels.size == 0:
-                    # time.sleep(0.005)
+                
+                # Early exit if no green pixels found
+                if not np.any(green_mask):
                     continue
+                    
+                # Find white pixel range using vectorized operations
+                white_pixels = np.column_stack(np.where(green_mask))
                 leftmost_x = np.min(white_pixels[:, 1]) + GREEN_CROP["x1"]
                 rightmost_x = np.max(white_pixels[:, 1]) + GREEN_CROP["x1"]
+                
                 triangle_screenshot = self._take_screenshot(TRIANGLE_CROP)
                 triangle = np.array(triangle_screenshot)
                 gray = cv2.cvtColor(triangle, cv2.COLOR_BGR2GRAY)
                 _, thresh = cv2.threshold(gray, TRIANGLE_GRAY_THRESHOLD, 255, cv2.THRESH_BINARY)
                 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 if not contours:
-                    # time.sleep(0.005)
                     continue
                 cnt = max(contours, key=cv2.contourArea)
                 epsilon = 0.04 * cv2.arcLength(cnt, True)
                 approx = cv2.approxPolyDP(cnt, epsilon, True)
                 M = cv2.moments(approx)
                 if M["m00"] == 0:
-                    # time.sleep(0.005)
                     continue
                 cx = int(M["m10"] / M["m00"]) + TRIANGLE_CROP["x1"]
                 self.logger.debug(f"Triangle centroid x: {cx}, white pixel range: {leftmost_x}-{rightmost_x}")
@@ -162,14 +156,23 @@ class PenaltyClashBot:
                 elif leftmost_x < cx:
                     self.logger.info("Triangle detected past start of pixel range, but too late released")
                     break
-                # time.sleep(0.005)
                 count += 1
         finally:
-            self.logger.info(f"{(time.time() - start)/count}s per second loop")
-            # pyautogui.mouseUp()
-            # Use win32api to release the left mouse button instead of pyautogui
+            self.logger.info(f"{time.perf_counter() - start_screenshot}s reaction time")
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             self.logger.info("Mouse released.")
+
+    def _find_matching_pixel_fast(self, img: np.ndarray, target_rgb_low: Tuple[int, int, int], target_rgb_high: Tuple[int, int, int]):
+        # Vectorized pixel search - much faster than nested loops
+        low = np.array(target_rgb_low)
+        high = np.array(target_rgb_high)
+        
+        # Sample every 5th pixel for speed
+        sampled = img[::5, ::5]
+        
+        # Vectorized comparison
+        mask = np.all((sampled >= low) & (sampled <= high), axis=2)
+        return np.any(mask)
 
 
     def _take_screenshot(self, region=None) -> Image.Image:
@@ -188,15 +191,4 @@ class PenaltyClashBot:
             else:
                 sct_img = sct.grab(monitor)
             img = Image.frombytes('RGB', sct_img.size, sct_img.rgb)
-        return img
-
-    def _find_matching_pixel(self, img: np.ndarray, target_rgb_low: Tuple[int, int, int], target_rgb_high: Tuple[int, int, int]):
-        h, w, _ = img.shape
-        for y in range(0, h, 5):
-            for x in range(0, w, 5):
-                pixel = img[y, x]
-                if (target_rgb_low[0] <= pixel[0] <= target_rgb_high[0] and
-                    target_rgb_low[1] <= pixel[1] <= target_rgb_high[1] and
-                    target_rgb_low[2] <= pixel[2] <= target_rgb_high[2]):
-                    return True
-        return False 
+        return img 
