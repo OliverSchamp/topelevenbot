@@ -96,5 +96,5 @@ def detect_x_buttons(
             y2 = y_c_orig + h_orig / 2
             detections.append([x1, y1, x2, y2, conf, cls])
     detections = nms_detections(detections, iou_threshold=nms_iou)
-    regions = [ScreenRegion(x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2)) for x1, y1, x2, y2, conf, cls in detections]
+    regions = [ScreenRegion(x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), conf=conf) for x1, y1, x2, y2, conf, cls in detections]
     return regions 

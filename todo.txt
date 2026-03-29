@@ -1,0 +1,11 @@
+Remove template matching wherever possible and go towards fully paddleocr
+create some kind of reference document with all the instructions based on the paddleocr output
+
+move from ldplayer to waydroid
+
+find a way to make the clicking and everything a little faster
+
+refactor code to be better
+
+replace pyautogui everywhere, with grim and ydotool for the fastest possible performance
+

@@ -9,7 +9,7 @@ import onnxruntime
 import time
 from torchvision.ops import nms
 
-def crop_black_bars(image, black_thresh=10, min_bar_thickness_ratio=0.05):
+def crop_black_bars(image, black_thresh=30, min_bar_thickness_ratio=0.05):
     """
     Detect and crop large black bars (letterbox) from the image.
     Args:
@@ -64,12 +64,13 @@ def preprocess_image(image_path, input_size=(960, 960)):
     Returns numpy array for ONNX input, original image, and scale/pad info.
     """
     try:
-        image = cv2.imread(image_path)
+        image = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
         if image is None:
             print(f"Could not load image: {image_path}")
             return None, None, None
         # Crop black bars if present
         image = crop_black_bars(image)
+        Image.fromarray(image).save("/mnt/SF_NAS/Oliver/cropped.jpg")
         original_image = image.copy()
         height, width = image.shape[:2]
         target_w, target_h = input_size
@@ -128,7 +129,7 @@ def nms_detections(detections, iou_threshold=0.5):
         keep.extend(idxs[np.atleast_1d(keep_idxs)].tolist())
     return [detections[i] for i in keep]
 
-def run_inference_onnx(session, image_path, conf_threshold=0.02, input_size=(960, 960), nms_iou=0.5):
+def run_inference_onnx(session, image_path, conf_threshold=0.001, input_size=(960, 960), nms_iou=0.5):
     """
     Run inference on an image using the loaded ONNX model session.
     Args:
@@ -141,22 +142,28 @@ def run_inference_onnx(session, image_path, conf_threshold=0.02, input_size=(960
         detections: List of detections with format [x1, y1, x2, y2, confidence, class_id]
     """
     image_np, original_image, scale_info = preprocess_image(image_path, input_size)
+    print(scale_info)
     if image_np is None:
         return None
     scale, pad_x, pad_y = scale_info
+    start = time.time()
     input_name = session.get_inputs()[0].name
     outputs = session.run(None, {input_name: image_np})
     output = outputs[0]
+    end = time.time()
+    print(f"Time taken: {end - start} seconds")
     if len(output.shape) == 3:
         output = output[0]  # Remove batch dim
     detections = []
     for det in output:
         if det.shape[-1] == 6:
-            x_c, y_c, w, h, conf, cls = det.tolist()
+            x_c, y_c, w, h, conf, clss = det.tolist()
         else:
             x_c, y_c, w, h, obj_conf, *cls_confs = det.tolist()
             conf = obj_conf * max(cls_confs)
-            cls = np.argmax(cls_confs)
+            clss = np.argmax(cls_confs)
+        # if conf > 0.001:
+        #     print(x_c, y_c, conf, clss)
         if conf >= conf_threshold:
             # Map from letterboxed image to original image
             x_c_orig = (x_c - pad_x) / scale
@@ -167,7 +174,7 @@ def run_inference_onnx(session, image_path, conf_threshold=0.02, input_size=(960
             y1 = y_c_orig - h_orig / 2
             x2 = x_c_orig + w_orig / 2
             y2 = y_c_orig + h_orig / 2
-            detections.append([x1, y1, x2, y2, conf, cls])
+            detections.append([x1, y1, x2, y2, conf, clss])
     # Apply NMS
     detections = nms_detections(detections, iou_threshold=nms_iou)
     return detections
@@ -228,14 +235,15 @@ def main():
     print("To run inference on an image, use:")
     print("detections = run_inference_onnx(session, 'path_to_your_image.jpg')")
     print("visualize_results('path_to_your_image.jpg', detections)")
-    test_image_path = "img/auto_auction/new_ads_img/5.jpg"
+    test_image_path = "/mnt/SF_NAS/Oliver/Log/2026_03_14_08_53_06.jpg"
     if os.path.exists(test_image_path):
         print(f"\nRunning inference on {test_image_path}...")
-        start_time = time.time()
-        detections = run_inference_onnx(session, test_image_path)
-        end_time = time.time()
-        print(f"Inference time: {(end_time - start_time)*1000} ms")
-        visualize_results(test_image_path, detections, "output_result.jpg")
+        for i in range(1):
+            start_time = time.time()
+            detections = run_inference_onnx(session, test_image_path)
+            end_time = time.time()
+            print(f"Inference time: {(end_time - start_time)*1000} ms")
+        visualize_results(test_image_path, detections, "/mnt/SF_NAS/Oliver/vis_result.jpg")
 
 if __name__ == "__main__":
     main() 

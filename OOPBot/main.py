@@ -2,18 +2,18 @@
 Main entry point for Top Eleven Bot
 """
 
+# TODO: assume that waydroid is already open. close and open top eleven with vision only based instruction
+
 import sys
 import time
 from pathlib import Path
 from utils.logging_utils import setup_logging
 from core.bot import TopElevenBot, BotMode
-from utils.image_processing import find_and_click
-from config.auction_config import IMAGE_PATHS
+
+setup_logging()
 
 def main():
     """Main entry point"""
-    # Setup logging
-    setup_logging()
     
     # Create necessary directories
     Path("img/auto_auction").mkdir(parents=True, exist_ok=True)

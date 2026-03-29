@@ -3,15 +3,14 @@ Training bot functionality for Top Eleven
 """
 
 import time
-import pyautogui
 import cv2
 import numpy as np
-import pytesseract
 import re
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Tuple, Callable, Dict, List
 
+from utils.ocr import PPOCRv5OpenVINO
 from utils.logging_utils import BotLogger
 from utils.image_processing import find_and_click, find_on_screen, take_screenshot
 from config.training_config import (
@@ -33,9 +32,6 @@ from config.training_config import (
 )
 from interface import TemplateMatch, ScreenRegion, TrainingProgress
 
-# Set tesseract path
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
-
 # TODO: still bad behaviour when a player improves a star. does restart game though....
 # TODO: check condition from the start of training also
 
@@ -54,6 +50,11 @@ class TrainingBot:
         self.logger = BotLogger(__name__)
         self.should_restart = False
         
+        self.ocr_pipeline = PPOCRv5OpenVINO(
+            det_model_path="ocr_model/detector/detector.xml",
+            rec_model_path="ocr_model/recognizer/recognizer.xml",
+            dict_path="ocr_model/ppocrv5_en_dict.txt"
+        )
         # Load drills CSV
         try:
             csv_path = Path("fast_trainer_sheet/drills_per_position.csv")
@@ -190,7 +191,7 @@ class TrainingBot:
             thresh = cv2.inRange(roi, (50, 50, 50), (90, 90, 90))
             # save thresh image
             cv2.imwrite("img/auto_training/roi_image_position_thresh.png", thresh)
-            text = pytesseract.image_to_string(thresh).strip().upper()
+            text = self.ocr_pipeline.run_recognition(thresh).strip().upper()
             self.logger.info(f"Extracted position text: {text}")
             
             return text
@@ -267,7 +268,7 @@ class TrainingBot:
                     roi = gray[y1:y2, x1:x2]
                     
                     # Apply OCR
-                    text = pytesseract.image_to_string(roi).strip().upper()
+                    text = self.ocr_pipeline.run_recognition(roi).strip().upper()
                     self.logger.info(f"OCR text: {text}")
                     
                     # Check if text matches any target drill
@@ -488,7 +489,7 @@ class TrainingBot:
             gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
             
             # Perform OCR
-            text = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
+            text = self.ocr_pipeline.run_recognition(gray)
             
             # Look for percentage value
             matches = re.findall(r'(\d+)%', text)
@@ -519,7 +520,7 @@ class TrainingBot:
             gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
             
             # Perform OCR
-            text = pytesseract.image_to_string(gray, config='--oem 3 --psm 6')
+            text = self.ocr_pipeline.run_recognition(gray)
             
             # Look for numeric value
             matches = re.findall(r'\d+', text)
@@ -728,9 +729,6 @@ class TrainingBot:
     def _prepare_restart(self) -> None:
         """Prepare for bot restart"""
         self.logger.info("Preparing for restart")
-        # Exit fullscreen
-        pyautogui.press('f11')
-        time.sleep(0.5) 
         # Exit the top 11 tab through clicking the x in the tab
         match = find_on_screen(
             str("img/general/top_eleven_tab.jpg"),

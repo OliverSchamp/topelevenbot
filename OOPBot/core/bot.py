@@ -3,20 +3,22 @@ Main bot functionality for Top Eleven
 """
 
 import time
-import pyautogui
 from pathlib import Path
-from typing import Optional
 from enum import Enum
-import logging
+import time
 
+from utils.ocr import OCRResult
 from utils.logging_utils import BotLogger
-from utils.image_processing import find_and_click, find_on_screen
+from utils.image_processing import find_and_click, find_on_screen, fast_click, take_screenshot
+import cv2
+import numpy as np
 from config.auction_config import IMAGE_PATHS as AUCTION_IMAGE_PATHS
 from config.training_config import IMAGE_PATHS as TRAINING_IMAGE_PATHS
 from config.ad_config import IMAGE_PATHS as AD_IMAGE_PATHS
 from config.general_config import IMAGE_PATHS as GENERAL_IMAGE_PATHS
-from config.general_config import MYSTERY_CHOICE_COORDS
+from config.general_config import MYSTERY_CHOICE_COORDS, ocr_pipeline
 from interface import TemplateMatch, ScreenRegion, BotStatus
+import subprocess
 
 # Combine all image paths
 IMAGE_PATHS = {
@@ -43,11 +45,8 @@ class TopElevenBot:
         self.logger = BotLogger(__name__)
         self.should_restart = False
         
-        # Initialize pyautogui safety
-        pyautogui.FAILSAFE = True
-        
         # Verify required images exist
-        self._verify_images()
+        # self._verify_images()
     
     def _verify_images(self) -> None:
         """Verify that all required images exist"""
@@ -91,53 +90,39 @@ class TopElevenBot:
         """Stop the bot and clean up"""
         self.logger.info("Stopping bot")
         self.current_mode = None
+        subprocess.run(["sudo", "waydroid", "shell", "input", "keyevent", "3"])
+        subprocess.run(["sudo", "waydroid", "shell", "am", "force-stop", "eu.nordeus.topeleven.android"])
     
     def _launch_game(self) -> bool:
-        """Launch the game through LDPlayer"""
-        try:
-            # Check if LDPlayer is already open
-            match = find_on_screen(
-                str(IMAGE_PATHS['ldplayer_open']), 
-                description="LDPlayer window"
-            )
-            
-            # If LDPlayer is not already open, try to launch it
-            if match.center_x is None:
-                self.logger.info("LDPlayer not found, attempting to launch it")
-                if not find_and_click(str(IMAGE_PATHS['ldplayer']), description="LDPlayer icon"):
-                    self.logger.error("Could not find LDPlayer icon")
-                    return False
-            else:
-                self.logger.info("LDPlayer already running")
-                
-            # Enter fullscreen
-            pyautogui.press('f11')
-            time.sleep(0.3)
+        """Assume waydroid is already open. Detect app in top left corner and click."""
 
-            #if has been restarted
-            if find_and_click(str("img/general/top_eleven.jpg"), description="restart top eleven"):
-                time.sleep(20)  # Wait for game to load
+        screenshot = cv2.cvtColor(take_screenshot(), cv2.COLOR_BGR2GRAY)
+        screenshot_blurred = cv2.medianBlur(screenshot, 5)
+        circles = cv2.HoughCircles(screenshot_blurred, 
+                            cv2.HOUGH_GRADIENT, 
+                            dp=1.2, 
+                            minDist=50,
+                            param1=40, 
+                            param2=18, 
+                            minRadius=27, 
+                            maxRadius=30)
 
-            # check for daily rewards popup and select a daily reward
-            self._collect_daily_reward()
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            top_left_icon = min(circles[0, :], key=lambda c: c[0] + c[1])  
+            self.logger.info(f"Top-Left Icon located at: X={top_left_icon[0]}, Y={top_left_icon[1]}")
+            fast_click(top_left_icon[0]+(top_left_icon[2]//2), top_left_icon[1]+(top_left_icon[2]//2))
 
-            # click at [0, 500]
-            pyautogui.moveTo(0, 500, duration=0.5)
-            pyautogui.click()
-            time.sleep(0.5)
-            
-            # Find and click home menu if bot is not in ad watch mode
-            if self.current_mode != BotMode.AD_WATCH:
-                if not find_and_click(str(IMAGE_PATHS['home_menu']), description="home menu", threshold=0.75):
-                    self.logger.error("Could not find home menu")
-                    return False
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error("Error launching game", e)
-            return False
-    
+        start_time = time.time()
+        while time.time() - start_time < 20:
+            screenshot = take_screenshot()
+            ocrresult: OCRResult = ocr_pipeline.run(screenshot)
+            for textblock in ocrresult.blocks:
+                if textblock.text == "HOME":
+                    break
+                if "DAILY" in textblock.text or "REWARDS" in textblock.text:
+                    break
+
     def get_status(self) -> BotStatus:
         """Get current bot status"""
         return BotStatus(
@@ -162,8 +147,7 @@ class TopElevenBot:
 
         # if not find_and_click(IMAGE_PATHS["mystery_choice"]):
         #     return
-        pyautogui.moveTo(MYSTERY_CHOICE_COORDS['x'], MYSTERY_CHOICE_COORDS['y'], duration=0.5)
-        pyautogui.click()
+        fast_click(MYSTERY_CHOICE_COORDS['x'], MYSTERY_CHOICE_COORDS['y'])
         
         time.sleep(3)
         

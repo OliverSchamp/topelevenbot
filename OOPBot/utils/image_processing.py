@@ -4,17 +4,35 @@ Utility functions for image processing and screen interaction
 
 import cv2
 import numpy as np
-import pyautogui
 import time
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, List
 import logging
+import subprocess
 
 from config.auction_config import CONFIDENCE_THRESHOLD
+from config.general_config import SCREEN_HEIGHT, SCREEN_WIDTH, width, height, taskbar_offset_px, mouse_keyboard_controller, mouse_move_controller, screengrabber
 from interface import TemplateMatch, ScreenRegion
 
 logger = logging.getLogger(__name__)
 
-def crop_black_bars(image, black_thresh=10, min_bar_thickness_ratio=0.05):
+
+def get_fixed_boundaries(points_dict: Dict[str, float], start_bound: int) -> Dict[str, Tuple[int, int]]:
+    # sort the points by their x-coordinate
+    points_dict = dict(sorted(points_dict.items(), key=lambda item: item[1]))
+    points = list(points_dict.values())
+    initial_radius = points[0] - start_bound
+    output = {list(points_dict.keys())[0]: (start_bound, points[0] + initial_radius)}
+    for k, v in points_dict.items():
+        if k == list(points_dict.keys())[0]:
+            continue
+        prev_point = output[list(output.keys())[-1]][-1]
+        current_point = v
+        radius = (current_point - prev_point)
+        output[k] = (current_point - radius, current_point + radius)
+    return output
+
+
+def crop_black_bars(image, black_thresh=30, min_bar_thickness_ratio=0.05):
     """
     Detect and crop large black bars (letterbox) from the image.
     Args:
@@ -55,10 +73,38 @@ def crop_black_bars(image, black_thresh=10, min_bar_thickness_ratio=0.05):
         return cropped, (crop_left, crop_top)
     return image, (0, 0)
 
-def take_screenshot() -> np.ndarray:
-    """Take a screenshot of the entire screen"""
-    screenshot = pyautogui.screenshot()
-    return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+def take_screenshot_wh(rel_x: int = 0, rel_y: int = 0, rel_width: int = width, rel_height: int = height) -> np.ndarray:
+    roi_base_x = (SCREEN_WIDTH - width) // 2
+    roi_base_y = (SCREEN_HEIGHT - height) // 2 + taskbar_offset_px
+    abs_x = roi_base_x + rel_x
+    abs_y = roi_base_y + rel_y
+    region = f"{abs_x},{abs_y} {rel_width}x{rel_height}"
+    command = ['grim', '-t', 'ppm', '-g', region, '-']
+    result = subprocess.run(command, capture_output=True, check=True)
+    data_start = result.stdout.find(b'\n', result.stdout.find(b'\n', result.stdout.find(b'\n') + 1) + 1) + 1
+    flat_array = np.frombuffer(result.stdout[data_start:], dtype=np.uint8)
+    img = flat_array.reshape((rel_height, rel_width, 3))
+    return img
+
+def take_screenshot(rel_x: int = 0, rel_y: int = 0, rel_x2: int = width, rel_y2: int = height) -> np.ndarray:
+    rel_width = rel_x2 - rel_x
+    rel_height = rel_y2 - rel_y
+    roi_base_x = (SCREEN_WIDTH - width) // 2
+    roi_base_y = (SCREEN_HEIGHT - height) // 2 + taskbar_offset_px
+    abs_x = roi_base_x + rel_x
+    abs_y = roi_base_y + rel_y
+    region = f"{abs_x},{abs_y} {rel_width}x{rel_height}"
+    command = ['grim', '-t', 'ppm', '-g', region, '-']
+    result = subprocess.run(command, capture_output=True, check=True)
+    data_start = result.stdout.find(b'\n', result.stdout.find(b'\n', result.stdout.find(b'\n') + 1) + 1) + 1
+    flat_array = np.frombuffer(result.stdout[data_start:], dtype=np.uint8)
+    img = flat_array.reshape((rel_height, rel_width, 3))
+    
+    return img
+
+def take_screenshot_fast(x1: int = 0, y1: int = 0, x2: int = width, y2: int = height, mode: str = "RGB"):
+    img = screengrabber.grab_frame(mode)
+    return img[y1:y2, x1:x2]
 
 def find_on_screen(
     template_path: str, 
@@ -76,7 +122,7 @@ def find_on_screen(
     Returns: TemplateMatch object containing match details and confidence score
     """
     try:
-        template = cv2.imread(str(template_path))
+        template = cv2.cvtColor(cv2.imread(str(template_path)), cv2.COLOR_BGR2RGB)
         if template is None:
             raise FileNotFoundError(f"Could not load template image: {template_path}")
         
@@ -88,7 +134,7 @@ def find_on_screen(
                 search_region.y1:search_region.y2,
                 search_region.x1:search_region.x2
             ]
-        
+
         result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
         
@@ -117,7 +163,9 @@ def find_on_screen(
         else:
             logger.info(f"No {description} found as confidence score is {max_val:.2%}")
             cv2.imwrite(f"img/auto_auction/no_{description}.jpg", screenshot)
-            
+            cv2.imwrite(f"img/auto_auction/{description}_template.jpg", template)
+
+
             return TemplateMatch(
                 center_x=None,
                 center_y=None,
@@ -140,11 +188,28 @@ def find_on_screen(
             confidence=0.0
         )
 
+def fast_click(x, y):
+    x_dest = ((SCREEN_WIDTH - width) // 2) + x
+    y_dest = ((SCREEN_HEIGHT - height) // 2) + y + taskbar_offset_px
+    mouse_move_controller.click(x_dest, y_dest, "nothing")
+    mouse_keyboard_controller.left_click()
+
+def fast_move(x, y):
+    x_dest = ((SCREEN_WIDTH - width) // 2) + x
+    y_dest = ((SCREEN_HEIGHT - height) // 2) + y + taskbar_offset_px
+    mouse_move_controller.click(x_dest, y_dest, "nothing")
+
+def press_only():
+    mouse_keyboard_controller.left_mouse_down()
+
+def release_only():
+    mouse_keyboard_controller.left_mouse_up()
+
 def find_and_click(
     template_path: str, 
     threshold: float = CONFIDENCE_THRESHOLD, 
     description: str = "button",
-    click_delay: float = 0.5,
+    click_delay: float = 0.2,
     search_region: Optional[ScreenRegion] = None
 ) -> bool:
     """
@@ -157,28 +222,18 @@ def find_and_click(
         search_region: Optional region to search in
     Returns: True if found and clicked, False otherwise
     """
-    logger.info(f"Searching for {description}...")
+    logger.debug(f"Searching for {description}...")
     
     match = find_on_screen(template_path, threshold, description, search_region)
-    logger.info(f"Confidence score for {description}: {match.confidence:.2%}")
+    logger.debug(f"Confidence score for {description}: {match.confidence:.2%}")
     
     if match.center_x is not None and match.center_y is not None:
-        logger.info(f"Moving mouse to {description} at coordinates: ({match.center_x}, {match.center_y})")
-        pyautogui.moveTo(match.center_x, match.center_y, duration=0.5)
-        pyautogui.click()
+        logger.debug(f"Moving mouse to {description} at coordinates: ({match.center_x}, {match.center_y})")
+        fast_click(match.center_x, match.center_y)
         time.sleep(click_delay)
         return True
     
     return False
-
-def clock_image_preprocessing(image: np.ndarray) -> np.ndarray:
-    """Preprocess clock image for better OCR results"""
-    processed_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    processed_image = cv2.inRange(processed_image, (35, 0, 0), (77, 255, 255))
-    kernel = np.ones((3,3), np.uint8)
-    processed_image = cv2.morphologyEx(processed_image, cv2.MORPH_CLOSE, kernel)
-    processed_image = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
-    return processed_image
 
 def safe_int_convert(value: Union[str, int]) -> Optional[int]:
     """

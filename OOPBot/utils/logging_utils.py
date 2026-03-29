@@ -9,6 +9,27 @@ from typing import Optional
 from pathlib import Path
 from datetime import datetime
 
+# def setup_logging(log_dir: str = "logs") -> None:
+#     """Set up enhanced logging with file output"""
+#     # Create logs directory if it doesn't exist
+#     Path(log_dir).mkdir(exist_ok=True)
+    
+#     # Create log filename with timestamp
+#     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#     log_file = Path(log_dir) / f"bot_{timestamp}.log"
+    
+#     # Configure logging with milliseconds in the format
+#     logging.basicConfig(
+#         level=logging.INFO,
+#         format='%(asctime)s.%(msecs)03d - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+#         datefmt='%Y-%m-%d %H:%M:%S',
+#         handlers=[
+#             logging.FileHandler(log_file),
+#             logging.StreamHandler()
+#         ]
+#     )
+
+
 def setup_logging(log_dir: str = "logs") -> None:
     """Set up enhanced logging with file output"""
     # Create logs directory if it doesn't exist
@@ -23,6 +44,7 @@ def setup_logging(log_dir: str = "logs") -> None:
         level=logging.INFO,
         format='%(asctime)s.%(msecs)03d - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
+        force=True, # <--- ADD THIS LINE to override any third-party loggers
         handlers=[
             logging.FileHandler(log_file),
             logging.StreamHandler()
